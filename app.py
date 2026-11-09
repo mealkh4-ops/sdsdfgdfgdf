@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask
 import jdatetime
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "70956629:jvLERRmmQGU4FxpB4G3pl12fPynPElOSpaE")
 API_BASE = f"https://api.splus.ir/bot{BOT_TOKEN}"
 
 app = Flask(__name__)
