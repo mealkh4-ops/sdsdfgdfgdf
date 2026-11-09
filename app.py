@@ -3,10 +3,11 @@ import re
 import time
 import threading
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from flask import Flask
+import jdatetime
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "70956629:jvLERRmmQGU4FxpB4G3pl12fPynPElOSpaE")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 API_BASE = f"https://api.splus.ir/bot{BOT_TOKEN}"
 
 app = Flask(__name__)
@@ -38,10 +39,22 @@ def translate(text):
     except Exception as e:
         return f"خطا: {e}"
 
+# ---------- تاریخ و ساعت ایران (شمسی) ----------
+def iran_datetime_str():
+    # ساعت ایران = UTC + 3:30
+    tehran_tz = timezone(timedelta(hours=3, minutes=30))
+    now = datetime.now(tehran_tz)
+    jnow = jdatetime.datetime.fromgregorian(datetime=now)
+    return jnow.strftime("%A %d %B %Y  -  %H:%M:%S")
+
 # ---------- گرفتن قیمت‌ها ----------
 def get_prices():
     try:
-        r = requests.get("https://call1.tgju.org/ajax.json", timeout=15)
+        r = requests.get(
+            "https://call1.tgju.org/ajax.json",
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
         d = r.json()
         cur = d.get("current", {})
 
@@ -51,23 +64,21 @@ def get_prices():
             return p if p else "—"
 
         usd       = val("price_dollar_rl")
-        gold_gram = val("geram18")            # گرم طلای ۱۸ عیار
-        full_coin = val("sekke-e-emami")      # سکه کامل (امامی)
-        half_coin = val("sekke-nim")          # نیم سکه
-        quarter   = val("sekke-rob")          # ربع سکه
-
-        now = datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
+        gold_gram = val("geram18")
+        full_coin = val("sekke_emami")
+        half_coin = val("sekke_nim")
+        quarter   = val("sekke_rob")
 
         return (
             "💰 قیمت‌های لحظه‌ای\n"
             "───────────────\n"
-            f"💵 دلار:          {usd} تومان\n"
-            f"🥇 گرم طلا (۱۸): {gold_gram} تومان\n"
-            f"🪙 سکه کامل:      {full_coin} تومان\n"
-            f"🪙 نیم سکه:       {half_coin} تومان\n"
-            f"🪙 ربع سکه:       {quarter} تومان\n"
+            f"💵 دلار:           {usd} تومان\n"
+            f"🥇 گرم طلا (۱۸):  {gold_gram} تومان\n"
+            f"🪙 سکه کامل:       {full_coin} تومان\n"
+            f"🪙 نیم سکه:        {half_coin} تومان\n"
+            f"🪙 ربع سکه:        {quarter} تومان\n"
             "───────────────\n"
-            f"🕐 ساعت: {now}"
+            f"🕐 {iran_datetime_str()} (به وقت ایران)"
         )
     except Exception as e:
         return f"⚠️ خطا در دریافت قیمت: {e}"
@@ -111,7 +122,6 @@ def bot_loop():
                 if not txt:
                     continue
 
-                # /start
                 if txt.startswith("/start"):
                     send(cid,
                          "سلام! 👋\n"
@@ -119,11 +129,9 @@ def bot_loop():
                          "• بنویس «قیمت» تا قیمت دلار، طلا و سکه رو بفرستم",
                          m["message_id"])
 
-                # قیمت
                 elif "قیمت" in txt or "price" in txt.lower():
                     send(cid, get_prices(), m["message_id"])
 
-                # انگلیسی → ترجمه
                 elif is_english(txt):
                     send(cid, translate(txt), m["message_id"])
 
