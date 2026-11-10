@@ -25,19 +25,23 @@ def is_english(text):
     return len(letters) / len(all_letters) > 0.5
 
 # ---------- ترجمه ----خ------
-def translate(text):
+from deep_translator import GoogleTranslator, MyMemoryTranslator
+
+def translate(text, target="fa"):
+    # ۱. اول با گوگل ترنسلیت (کیفیت بهتر)
     try:
-        r = requests.get(
-            "https://api.mymemory.translated.net/get",
-            params={"q": text, "langpair": "en|fa"},
-            timeout=15,
-        )
-        d = r.json()
-        if d.get("responseStatus") == 200:
-            return d["responseData"]["translatedText"]
-        return "ترجمه نشد."
+        return GoogleTranslator(source="en", target=target).translate(text)
     except Exception as e:
-        return f"خطا: {e}"
+        print(f"[GoogleTranslator failed] {e}", flush=True)
+
+    # ۲. اگر گوگل خطا داد، با MyMemory (بدون کلید)
+    try:
+        return MyMemoryTranslator(source="en", target=target).translate(text)
+    except Exception as e:
+        print(f"[MyMemory failed] {e}", flush=True)
+
+    # ۳. اگر هر دو خطا دادند
+    return "⚠️ ترجمه در حال حاضر در دسترس نیست. لطفاً بعداً تلاش کنید."
 
 # ---------- تاریخ و ساعت ایران (شمسی) ----------
 def iran_datetime_str():
