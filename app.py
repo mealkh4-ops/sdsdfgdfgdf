@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask
 import jdatetime
 from wiqaya import Wiqaya
+import translators as ts
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "70956629:jvLERRmmQGU4FxpB4G3pl12fPynPElOSpaE")
 API_BASE = f"https://api.splus.ir/bot{BOT_TOKEN}"
@@ -16,8 +17,10 @@ app = Flask(__name__)
 @app.route("/")
 def health():
     return "alive"
-# تنظیم فیلتر برای زبان فارسی
+
+# ---------- فیلتر الفاظ رکیک ----------
 profanity_filter = Wiqaya(lang="fa")
+
 # ---------- تشخیص انگلیسی ----------
 def is_english(text):
     letters = re.findall(r"[A-Za-z]", text)
@@ -26,17 +29,10 @@ def is_english(text):
         return False
     return len(letters) / len(all_letters) > 0.5
 
-# ---------- ترجمه ----خ------
-import translators as ts
-
+# ---------- ترجمه ----------
 def translate(text, target="fa"):
-    # لیست سرویس‌های جایگزین (به ترتیب اولویت)
-    services = ["google" , "bing", "alibaba", "baidu", "youdao", ]
-    
+    services = ["google", "bing", "alibaba", "baidu", "youdao"]
     for service in services:
-        if profanity_filter.is_profane(txt):
-            send(cid, "⚠️ خطا: پیام شما حاوی الفاظ نامناسب است و قابل پردازش نیست.", m["message_id"])
-            continue
         try:
             result = ts.translate_text(
                 text,
@@ -50,18 +46,16 @@ def translate(text, target="fa"):
         except Exception as e:
             print(f"[{service} failed] {e}", flush=True)
             continue
-    
     return "⚠️ ترجمه در حال حاضر در دسترس نیست. لطفاً بعداً تلاش کنید."
 
-# ---------- تاریخ و ساعت ایران (شمسی) ----------
+# ---------- تاریخ و ساعت ایران ----------
 def iran_datetime_str():
-    # ساعت ایران = UTC + 3:30
     tehran_tz = timezone(timedelta(hours=3, minutes=30))
     now = datetime.now(tehran_tz)
     jnow = jdatetime.datetime.fromgregorian(datetime=now)
     return jnow.strftime("%A %d %B %Y  -  %H:%M:%S")
 
-# ---------- گرفتن قیمت‌ها ----------
+# ---------- قیمت‌ها ----------
 def get_prices():
     try:
         r = requests.get(
@@ -82,29 +76,26 @@ def get_prices():
 
         usd = find("price_dollar_rl", "dollar_rl")
         gold_gram = find("geram18")
-
-        # سکه امامی: هم sekee و هم sekee_buy رو امتحان می‌کنیم
         full_coin = find("sekee", "sekee_buy", "sekke_emami")
-
-        # نیم و ربع سکه: طبق اطلاعات، nim و rob درست هستن
         half_coin = find("nim", "sekke_nim")
         quarter = find("rob", "sekke_rob")
 
         return (
             "💰 قیمت‌های لحظه‌ای\n"
             "───────────────\n"
-            f"💵 _دلار:           {usd} ریال\n"
+            f"💵 دلار:           {usd} ریال\n"
             "───────────────\n"
             f"🥇 گرم طلا (۱۸):  {gold_gram} ریال\n"
             f"🪙 سکه کامل:       {full_coin} ریال\n"
             f"🪙 نیم سکه:        {half_coin} ریال\n"
             f"🪙 ربع سکه:        {quarter} ریال\n"
             "───────────────\n"
-            f"🕐 {iran_datetime_str()} "
+            f"🕐 {iran_datetime_str()}"
         )
     except Exception as e:
         return f"⚠️ خطا در دریافت قیمت: {e}"
-# ---------- API بات ----------
+
+# ---------- API ----------
 def api(method, **params):
     try:
         r = requests.post(f"{API_BASE}/{method}", json=params, timeout=60)
@@ -119,7 +110,7 @@ def send(chat_id, text, reply_to=None):
         p["reply_to_message_id"] = reply_to
     return api("sendMessage", **p)
 
-# ---------- حلقه ربات ----------
+# ---------- حلقه اصلی ----------
 def bot_loop():
     offset = 0
     print("BOT STARTED", flush=True)
@@ -141,6 +132,11 @@ def bot_loop():
                 cid = m["chat"]["id"]
 
                 if not txt:
+                    continue
+
+                # ✅ فیلتر الفاظ رکیک - قبل از هر پردازشی
+                if profanity_filter.is_profane(txt):
+                    send(cid, "⚠️ خطا: پیام شما حاوی الفاظ نامناسب است.", m["message_id"])
                     continue
 
                 if txt.startswith("/start"):
