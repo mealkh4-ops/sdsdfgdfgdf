@@ -3,11 +3,13 @@ import re
 import time
 import threading
 import requests
+import tempfile
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 import jdatetime
-from wiqaya import Wiqaya
+from persian_text_guard import ProfanityFilter, WordList
 import translators as ts
+import instaloader
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "70956629:jvLERRmmQGU4FxpB4G3pl12fPynPElOSpaE")
 API_BASE = f"https://api.splus.ir/bot{BOT_TOKEN}"
@@ -19,8 +21,6 @@ def health():
     return "alive"
 
 # ---------- فیلتر الفاظ رکیک ----------
-from persian_text_guard import ProfanityFilter, WordList
-
 profanity_filter = ProfanityFilter(WordList.persian_default())
 
 # ---------- تشخیص انگلیسی ----------
@@ -30,6 +30,12 @@ def is_english(text):
     if not all_letters:
         return False
     return len(letters) / len(all_letters) > 0.5
+
+# ---------- تشخیص لینک اینستاگرام ----------
+def is_instagram_reel(text):
+    # الگوی ساده برای تشخیص لینک ریلز اینستاگرام
+    pattern = r"instagram\.com/(reel|p)/"
+    return bool(re.search(pattern, text))
 
 # ---------- ترجمه ----------
 def translate(text, target="fa"):
@@ -43,10 +49,9 @@ def translate(text, target="fa"):
                 to_language="fa"
             )
             if result:
-                # ✅ فیلتر خروجی فارسی قبل از بازگرداندن
-                if profanity_filter.contains_profanity(txt):
+                if profanity_filter.contains_profanity(result):
                     print(f"[FILTERED] {service} output contained profanity", flush=True)
-                    continue  # این سرویس را رد کن، برو سراغ سرویس بعدی
+                    continue
                 print(f"[OK] Translated by {service}", flush=True)
                 return result
         except Exception as e:
@@ -82,7 +87,7 @@ def get_prices():
 
         usd = find("price_dollar_rl", "dollar_rl")
         gold_gram = find("geram18")
-        full_coin = find("sekee", "sekee_buy", "sekke_emami")
+        full_coin = find("sekke", "sekke_buy", "sekke_emami")
         half_coin = find("nim", "sekke_nim")
         quarter = find("rob", "sekke_rob")
 
@@ -116,6 +121,77 @@ def send(chat_id, text, reply_to=None):
         p["reply_to_message_id"] = reply_to
     return api("sendMessage", **p)
 
+# ---------- ارسال ویدیو ----------
+def send_video(chat_id, video_path, caption=None, reply_to=None):
+    """ارسال فایل ویدیویی از مسیر محلی به سروش پلاس"""
+    url = f"{API_BASE}/sendVideo"
+    try:
+        with open(video_path, 'rb') as f:
+            files = {'video': f}
+            data = {'chat_id': chat_id}
+            if caption:
+                data['caption'] = caption
+            if reply_to:
+                data['reply_to_message_id'] = reply_to
+            
+            r = requests.post(url, data=data, files=files, timeout=120)
+            return r.json()
+    except Exception as e:
+        print(f"[SEND VIDEO ERROR] {e}", flush=True)
+        return {"ok": False}
+
+# ---------- دانلود و ارسال ریلز ----------
+def download_and_send_reel(chat_id, url, reply_to=None):
+    """دانلود ریلز اینستاگرام و ارسال آن به سروش پلاس"""
+    L = instaloader.Instaloader(
+        download_videos=True,
+        download_video_thumbnails=False,
+        download_geotags=False,
+        download_comments=False,
+        save_metadata=False,
+        post_metadata_txt_pattern="",
+    )
+    
+    # استخراج shortcode از لینک
+    # مثال: https://www.instagram.com/reel/ABC123/ -> ABC123
+    match = re.search(r"instagram\.com/(?:reel|p)/([^/?]+)", url)
+    if not match:
+        send(chat_id, "⚠️ لینک اینستاگرام معتبر نیست.", reply_to)
+        return
+    
+    shortcode = match.group(1)
+    
+    try:
+        # ایجاد پوشه موقت برای دانلود
+        with tempfile.TemporaryDirectory() as tmpdir:
+            L.dirname_pattern = tmpdir
+            
+            # دریافت پست و دانلود
+            post = instaloader.Post.from_shortcode(L.context, shortcode)
+            L.download_post(post, target=shortcode)
+            
+            # پیدا کردن فایل ویدیویی دانلود شده
+            video_file = None
+            for f in os.listdir(tmpdir):
+                if f.endswith('.mp4'):
+                    video_file = os.path.join(tmpdir, f)
+                    break
+            
+            if not video_file:
+                send(chat_id, "⚠️ ویدیویی برای ارسال پیدا نشد.", reply_to)
+                return
+            
+            # ارسال ویدیو
+            send(chat_id, "📥 در حال ارسال ویدیو...", reply_to)
+            result = send_video(chat_id, video_file, reply_to=reply_to)
+            
+            if not result.get("ok"):
+                send(chat_id, "⚠️ خطا در ارسال ویدیو.", reply_to)
+                
+    except Exception as e:
+        print(f"[REEL ERROR] {e}", flush=True)
+        send(chat_id, f"⚠️ خطا در دانلود ریلز: {str(e)[:100]}", reply_to)
+
 # ---------- حلقه اصلی ----------
 def bot_loop():
     offset = 0
@@ -140,16 +216,22 @@ def bot_loop():
                 if not txt:
                     continue
 
-                # ✅ فیلتر الفاظ رکیک - قبل از هر پردازشی
-                if profanity_filter.is_profane(txt):
+                # ✅ فیلتر الفاظ رکیک
+                if profanity_filter.contains_profanity(txt):
                     send(cid, "⚠️ خطا: پیام شما حاوی الفاظ نامناسب است.", m["message_id"])
+                    continue
+
+                # ✅ تشخیص لینک ریلز اینستاگرام
+                if is_instagram_reel(txt):
+                    download_and_send_reel(cid, txt, m["message_id"])
                     continue
 
                 if txt.startswith("/start"):
                     send(cid,
                          "سلام! 👋\n"
                          "• متن انگلیسی بفرست تا ترجمه کنم\n"
-                         "• بنویس «قیمت» تا قیمت دلار، طلا و سکه رو بفرستم",
+                         "• بنویس «قیمت» تا قیمت دلار، طلا و سکه رو بفرستم\n"
+                         "• لینک ریلز اینستاگرام بفرست تا دانلود و ارسال کنم",
                          m["message_id"])
 
                 elif "قیمت" in txt or "price" in txt.lower():
@@ -160,7 +242,7 @@ def bot_loop():
 
                 else:
                     send(cid,
-                         "لطفاً انگلیسی بفرست تا ترجمه کنم، یا بنویس «قیمت».",
+                         "لطفاً انگلیسی بفرست تا ترجمه کنم، بنویس «قیمت»، یا لینک ریلز اینستاگرام بفرست.",
                          m["message_id"])
 
         except Exception as e:
