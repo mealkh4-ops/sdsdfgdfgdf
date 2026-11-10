@@ -29,7 +29,7 @@ import translators as ts
 
 def translate(text, target="fa"):
     # لیست سرویس‌های جایگزین (به ترتیب اولویت)
-    services = ["bing", "alibaba", "baidu", "youdao", "google"]
+    services = ["google" , "bing", "alibaba", "baidu", "youdao", ]
     
     for service in services:
         try:
