@@ -3,3 +3,4 @@ requests
 jdatetime
 deep-translator
 translators
+wiqaya
