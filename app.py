@@ -19,7 +19,9 @@ def health():
     return "alive"
 
 # ---------- فیلتر الفاظ رکیک ----------
-profanity_filter = Wiqaya(lang="fa")
+from persian_text_guard import ProfanityFilter, WordList
+
+profanity_filter = ProfanityFilter(WordList.persian_default())
 
 # ---------- تشخیص انگلیسی ----------
 def is_english(text):
@@ -41,12 +43,16 @@ def translate(text, target="fa"):
                 to_language="fa"
             )
             if result:
+                # ✅ فیلتر خروجی فارسی قبل از بازگرداندن
+                if profanity_filter.contains_profanity(result):
+                    print(f"[FILTERED] {service} output contained profanity", flush=True)
+                    continue  # این سرویس را رد کن، برو سراغ سرویس بعدی
                 print(f"[OK] Translated by {service}", flush=True)
                 return result
         except Exception as e:
             print(f"[{service} failed] {e}", flush=True)
             continue
-    return "⚠️ ترجمه در حال حاضر در دسترس نیست. لطفاً بعداً تلاش کنید."
+    return "⚠️ ترجمه در حال حاضر در دسترس نیست یا محتوای نامناسب دارد."
 
 # ---------- تاریخ و ساعت ایران ----------
 def iran_datetime_str():
