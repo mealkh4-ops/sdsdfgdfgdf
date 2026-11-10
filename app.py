@@ -44,7 +44,7 @@ def translate(text, target="fa"):
             )
             if result:
                 # ✅ فیلتر خروجی فارسی قبل از بازگرداندن
-                if profanity_filter.contains_profanity(result):
+                if profanity_filter.contains_profanity(txt):
                     print(f"[FILTERED] {service} output contained profanity", flush=True)
                     continue  # این سرویس را رد کن، برو سراغ سرویس بعدی
                 print(f"[OK] Translated by {service}", flush=True)
