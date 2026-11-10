@@ -4,3 +4,4 @@ jdatetime
 deep-translator
 translators
 wiqaya
+persian-text-guard
