@@ -58,16 +58,32 @@ def get_prices():
         d = r.json()
         cur = d.get("current", {})
 
-        def val(key):
-            item = cur.get(key, {})
-            p = item.get("p", "")
-            return p if p else "—"
+        def find(*keys):
+            """چند کلید رو امتحان می‌کنه و اولین مقدار غیرخالی رو برمی‌گردونه."""
+            for k in keys:
+                item = cur.get(k, {})
+                p = item.get("p", "")
+                if p and p != "0":
+                    return p
+            return "—"
 
-        usd       = val("price_dollar_rl")
-        gold_gram = val("geram18")
-        full_coin = val("sekke_emami")
-        half_coin = val("sekke_nim")
-        quarter   = val("sekke_rob")
+        usd = find(
+            "price_dollar_rl", "price_dollar", "dollar_rl",
+            "price_dollar_rl_tehran", "usd"
+        )
+        gold_gram = find("geram18", "geram_18", "gold_18")
+        full_coin = find(
+            "sekke_emami", "sekke-imami", "sekkee",
+            "sekke_emami_rl", "full_coin", "emami"
+        )
+        half_coin = find(
+            "sekke_nim", "sekke-nim", "nim",
+            "sekke_nim_rl", "half_coin"
+        )
+        quarter = find(
+            "sekke_rob", "sekke-rob", "rob",
+            "sekke_rob_rl", "quarter_coin"
+        )
 
         return (
             "💰 قیمت‌های لحظه‌ای\n"
@@ -82,7 +98,6 @@ def get_prices():
         )
     except Exception as e:
         return f"⚠️ خطا در دریافت قیمت: {e}"
-
 # ---------- API بات ----------
 def api(method, **params):
     try:
