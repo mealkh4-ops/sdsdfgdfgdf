@@ -6,6 +6,7 @@ import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 import jdatetime
+from wiqaya import Wiqaya
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "70956629:jvLERRmmQGU4FxpB4G3pl12fPynPElOSpaE")
 API_BASE = f"https://api.splus.ir/bot{BOT_TOKEN}"
@@ -15,7 +16,8 @@ app = Flask(__name__)
 @app.route("/")
 def health():
     return "alive"
-
+# تنظیم فیلتر برای زبان فارسی
+profanity_filter = Wiqaya(lang="fa")
 # ---------- تشخیص انگلیسی ----------
 def is_english(text):
     letters = re.findall(r"[A-Za-z]", text)
@@ -32,6 +34,9 @@ def translate(text, target="fa"):
     services = ["google" , "bing", "alibaba", "baidu", "youdao", ]
     
     for service in services:
+        if profanity_filter.is_profane(txt):
+            send(cid, "⚠️ خطا: پیام شما حاوی الفاظ نامناسب است و قابل پردازش نیست.", m["message_id"])
+            continue
         try:
             result = ts.translate_text(
                 text,
