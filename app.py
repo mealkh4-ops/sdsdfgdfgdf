@@ -59,7 +59,6 @@ def get_prices():
         cur = d.get("current", {})
 
         def find(*keys):
-            """چند کلید رو امتحان می‌کنه و اولین مقدار غیرخالی رو برمی‌گردونه."""
             for k in keys:
                 item = cur.get(k, {})
                 p = item.get("p", "")
@@ -67,32 +66,15 @@ def get_prices():
                     return p
             return "—"
 
-        # دلار - کلیدهای مختلف رو امتحان می‌کنیم
-        usd = find(
-            "price_dollar_rl", "dollar_rl", "price_dollar",
-            "dollar", "usd"
-        )
+        usd = find("price_dollar_rl", "dollar_rl")
+        gold_gram = find("geram18")
 
-        # گرم طلا - geram18 مطمئناً درسته
-        gold_gram = find("geram18", "geram_18", "gold_18")
+        # سکه امامی: هم sekee و هم sekee_buy رو امتحان می‌کنیم
+        full_coin = find("sekee", "sekee_buy", "sekke_emami")
 
-        # سکه امامی - کلیدهای مختلف
-        full_coin = find(
-            "sekke_emami", "sekke-imami", "sekke", "sekee",
-            "emami", "full_coin", "sekke_emami_rl"
-        )
-
-        # نیم سکه
-        half_coin = find(
-            "sekke_nim", "sekke-nim", "nim", "half_coin",
-            "sekke_nim_rl"
-        )
-
-        # ربع سکه
-        quarter = find(
-            "sekke_rob", "sekke-rob", "rob", "quarter_coin",
-            "sekke_rob_rl"
-        )
+        # نیم و ربع سکه: طبق اطلاعات، nim و rob درست هستن
+        half_coin = find("nim", "sekke_nim")
+        quarter = find("rob", "sekke_rob")
 
         return (
             "💰 قیمت‌های لحظه‌ای\n"
