@@ -25,32 +25,27 @@ def is_english(text):
     return len(letters) / len(all_letters) > 0.5
 
 # ---------- ترجمه ----خ------
-import time
-from deep_translator import GoogleTranslator, MyMemoryTranslator
-
-# یک نمونه ثابت از گوگل (به جای ساختن هر بار)
-_google = GoogleTranslator(source="en", target="fa")
+import translators as ts
 
 def translate(text, target="fa"):
-    global _google
-
-    # ۱. گوگل (با کمی تاخیر برای جلوگیری از محدودیت)
-    try:
-        time.sleep(1)  # ۱ ثانیه صبر بین درخواست‌ها
-        result = _google.translate(text)
-        if result:
-            return result
-    except Exception as e:
-        print(f"[Google failed] {e}", flush=True)
-
-    # ۲. MyMemory (با کد زبان درست)
-    try:
-        result = MyMemoryTranslator(source="en-GB", target="fa-IR").translate(text)
-        if result:
-            return result
-    except Exception as e:
-        print(f"[MyMemory failed] {e}", flush=True)
-
+    # لیست سرویس‌های جایگزین (به ترتیب اولویت)
+    services = ["bing", "alibaba", "baidu", "youdao", "google"]
+    
+    for service in services:
+        try:
+            result = ts.translate_text(
+                text,
+                translator=service,
+                from_language="en",
+                to_language="fa"
+            )
+            if result:
+                print(f"[OK] Translated by {service}", flush=True)
+                return result
+        except Exception as e:
+            print(f"[{service} failed] {e}", flush=True)
+            continue
+    
     return "⚠️ ترجمه در حال حاضر در دسترس نیست. لطفاً بعداً تلاش کنید."
 
 # ---------- تاریخ و ساعت ایران (شمسی) ----------
