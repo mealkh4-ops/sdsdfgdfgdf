@@ -24,7 +24,7 @@ def is_english(text):
         return False
     return len(letters) / len(all_letters) > 0.5
 
-# ---------- ترجمه ----------
+# ---------- ترجمه ----خ------
 def translate(text):
     try:
         r = requests.get(
