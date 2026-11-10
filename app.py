@@ -67,22 +67,31 @@ def get_prices():
                     return p
             return "—"
 
+        # دلار - کلیدهای مختلف رو امتحان می‌کنیم
         usd = find(
-            "price_dollar_rl", "price_dollar", "dollar_rl",
-            "price_dollar_rl_tehran", "usd"
+            "price_dollar_rl", "dollar_rl", "price_dollar",
+            "dollar", "usd"
         )
+
+        # گرم طلا - geram18 مطمئناً درسته
         gold_gram = find("geram18", "geram_18", "gold_18")
+
+        # سکه امامی - کلیدهای مختلف
         full_coin = find(
-            "sekke_emami", "sekke-imami", "sekkee",
-            "sekke_emami_rl", "full_coin", "emami"
+            "sekke_emami", "sekke-imami", "sekke", "sekee",
+            "emami", "full_coin", "sekke_emami_rl"
         )
+
+        # نیم سکه
         half_coin = find(
-            "sekke_nim", "sekke-nim", "nim",
-            "sekke_nim_rl", "half_coin"
+            "sekke_nim", "sekke-nim", "nim", "half_coin",
+            "sekke_nim_rl"
         )
+
+        # ربع سکه
         quarter = find(
-            "sekke_rob", "sekke-rob", "rob",
-            "sekke_rob_rl", "quarter_coin"
+            "sekke_rob", "sekke-rob", "rob", "quarter_coin",
+            "sekke_rob_rl"
         )
 
         return (
