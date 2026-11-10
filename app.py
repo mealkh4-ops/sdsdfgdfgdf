@@ -88,13 +88,14 @@ def get_prices():
         return (
             "💰 قیمت‌های لحظه‌ای\n"
             "───────────────\n"
-            f"💵 _دلار:           {usd} تومان\n"
-            f"🥇 گرم طلا (۱۸):  {gold_gram} تومان\n"
-            f"🪙 سکه کامل:       {full_coin} تومان\n"
-            f"🪙 نیم سکه:        {half_coin} تومان\n"
-            f"🪙 ربع سکه:        {quarter} تومان\n"
+            f"💵 _دلار:           {usd} ریال\n"
             "───────────────\n"
-            f"🕐 {iran_datetime_str()} (به وقت ایران)"
+            f"🥇 گرم طلا (۱۸):  {gold_gram} ریال\n"
+            f"🪙 سکه کامل:       {full_coin} ریال\n"
+            f"🪙 نیم سکه:        {half_coin} ریال\n"
+            f"🪙 ربع سکه:        {quarter} ریال\n"
+            "───────────────\n"
+            f"🕐 {iran_datetime_str()} "
         )
     except Exception as e:
         return f"⚠️ خطا در دریافت قیمت: {e}"
