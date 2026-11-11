@@ -2,8 +2,8 @@ import os
 import re
 import time
 import threading
-import requests
 import tempfile
+import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 import jdatetime
@@ -11,76 +11,107 @@ from persian_text_guard import ProfanityFilter, WordList
 import translators as ts
 import instaloader
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "CJAGGI0PARDYRLWTDYMRRBRZXMEKDDWSROEWSDHGVFPZVPIOUFGBBBIVHNVVBPKN")
+# ---------- تنظیمات ----------
+BOT_TOKEN = os.environ.get("CJAGGI0PARDYRLWTDYMRRBRZXMEKDDWSROEWSDHGVFPZVPIOUFGBBBIVHNVVBPKN")
+if not BOT_TOKEN:
+    raise SystemExit("BOT_TOKEN environment variable is not set!")
+
 API_BASE = f"https://botapi.rubika.ir/v3/{BOT_TOKEN}"
 
+IG_USER = os.environ.get("IG_USER")           # اختیاری
+IG_SESSION_FILE = os.environ.get("IG_SESSION") # اختیاری (مسیر session)
+
 app = Flask(__name__)
+
 
 @app.route("/")
 def health():
     return "alive"
 
-# ---------- فیلتر الفاظ رکیک ----------
+
+# ---------- فیلتر الفاظ ----------
 profanity_filter = ProfanityFilter(WordList.persian_default())
 
+
+def is_profane(text: str) -> bool:
+    try:
+        return profanity_filter.contains_profanity(text)
+    except Exception:
+        return False
+
+
 # ---------- تشخیص انگلیسی ----------
-def is_english(text):
+def is_english(text: str) -> bool:
     letters = re.findall(r"[A-Za-z]", text)
+    if len(letters) < 3:
+        return False
     all_letters = re.findall(r"[A-Za-z\u0600-\u06FF]", text)
     if not all_letters:
         return False
-    return len(letters) / len(all_letters) > 0.5
+    return len(letters) / len(all_letters) > 0.4
+
 
 # ---------- تشخیص لینک اینستاگرام ----------
-def is_instagram_reel(text):
-    # الگوی ساده برای تشخیص لینک ریلز اینستاگرام
-    pattern = r"instagram\.com/(reel|p)/"
-    return bool(re.search(pattern, text))
+IG_PATTERN = re.compile(
+    r"(?:instagram\.com|instagr\.am)/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+
+
+def extract_ig_shortcode(text: str):
+    m = IG_PATTERN.search(text)
+    return m.group(1) if m else None
+
 
 # ---------- ترجمه ----------
-def translate(text, target="fa"):
+def translate(text: str) -> str:
     services = ["google", "bing", "alibaba", "baidu", "youdao"]
+    original = text.strip()
     for service in services:
         try:
             result = ts.translate_text(
                 text,
                 translator=service,
                 from_language="en",
-                to_language="fa"
+                to_language="fa",
             )
-            if result:
-                if profanity_filter.contains_profanity(result):
-                    print(f"[FILTERED] {service} output contained profanity", flush=True)
-                    continue
-                print(f"[OK] Translated by {service}", flush=True)
-                return result
+            if not result:
+                continue
+            result = result.strip()
+            if not result or result == original:
+                continue
+            if is_profane(result):
+                print(f"[FILTERED] {service} output contained profanity", flush=True)
+                continue
+            print(f"[OK] Translated by {service}", flush=True)
+            return result
         except Exception as e:
             print(f"[{service} failed] {e}", flush=True)
             continue
     return "⚠️ ترجمه در حال حاضر در دسترس نیست یا محتوای نامناسب دارد."
 
-# ---------- تاریخ و ساعت ایران ----------
-def iran_datetime_str():
+
+# ---------- تاریخ ایران ----------
+def iran_datetime_str() -> str:
     tehran_tz = timezone(timedelta(hours=3, minutes=30))
     now = datetime.now(tehran_tz)
     jnow = jdatetime.datetime.fromgregorian(datetime=now)
     return jnow.strftime("%A %d %B %Y  -  %H:%M:%S")
 
+
 # ---------- قیمت‌ها ----------
-def get_prices():
+def get_prices() -> str:
     try:
         r = requests.get(
             "https://call1.tgju.org/ajax.json",
             timeout=15,
             headers={"User-Agent": "Mozilla/5.0"},
         )
-        d = r.json()
-        cur = d.get("current", {})
+        cur = r.json().get("current", {})
 
         def find(*keys):
             for k in keys:
-                item = cur.get(k, {})
-                p = item.get("p", "")
+                p = cur.get(k, {}).get("p", "")
                 if p and p != "0":
                     return p
             return "—"
@@ -106,14 +137,16 @@ def get_prices():
     except Exception as e:
         return f"⚠️ خطا در دریافت قیمت: {e}"
 
+
 # ---------- API ----------
-def api(method, **params):
+def api(method: str, **params) -> dict:
     try:
         r = requests.post(f"{API_BASE}/{method}", json=params, timeout=60)
         return r.json()
     except Exception as e:
-        print(e, flush=True)
+        print(f"[API ERROR] {method}: {e}", flush=True)
         return {"ok": False}
+
 
 def send(chat_id, text, reply_to=None):
     p = {"chat_id": chat_id, "text": text}
@@ -121,134 +154,223 @@ def send(chat_id, text, reply_to=None):
         p["reply_to_message_id"] = reply_to
     return api("sendMessage", **p)
 
-# ---------- ارسال ویدیو ----------
-def send_video(chat_id, video_path, caption=None, reply_to=None):
-    """ارسال فایل ویدیویی از مسیر محلی به سروش پلاس"""
-    url = f"{API_BASE}/sendVideo"
+
+# ---------- ارسال ویدیو (آپلود مرحله‌ای) ----------
+def upload_and_send_video(chat_id, video_path, caption=None, reply_to=None):
+    """
+    روبیکا معمولاً آپلود مستقیم فایل قبول نمی‌کنه.
+    اول آپلود می‌کنیم، file_id می‌گیریم، بعد sendFile/sendVideo صدا می‌زنیم.
+    اگر API شما آپلود مستقیم داره، این تابع رو متناسب با docs اصلاح کن.
+    """
+    # 1) آپلود فایل — مسیر/اسم متد و فیلدها باید با docs روبیکا هماهنگ شه
     try:
-        with open(video_path, 'rb') as f:
-            files = {'video': f}
-            data = {'chat_id': chat_id}
-            if caption:
-                data['caption'] = caption
-            if reply_to:
-                data['reply_to_message_id'] = reply_to
-            
-            r = requests.post(url, data=data, files=files, timeout=120)
-            return r.json()
+        upload_url = f"{API_BASE}/uploadFile"
+        with open(video_path, "rb") as f:
+            files = {"file": ("video.mp4", f, "video/mp4")}
+            data = {"type": "video"}
+            up = requests.post(upload_url, data=data, files=files, timeout=300).json()
+        if not up.get("ok"):
+            print(f"[UPLOAD FAIL] {up}", flush=True)
+            return {"ok": False, "raw": up}
+        file_id = up.get("result", {}).get("file_id") or up.get("file_id")
+        if not file_id:
+            print(f"[UPLOAD NO FILE_ID] {up}", flush=True)
+            return {"ok": False, "raw": up}
     except Exception as e:
-        print(f"[SEND VIDEO ERROR] {e}", flush=True)
+        print(f"[UPLOAD ERROR] {e}", flush=True)
         return {"ok": False}
 
+    # 2) ارسال با file_id
+    payload = {"chat_id": chat_id, "file_id": file_id}
+    if caption:
+        payload["caption"] = caption
+    if reply_to:
+        payload["reply_to_message_id"] = reply_to
+    return api("sendFile", **payload)  # یا sendVideo — بسته به API
+
+
 # ---------- دانلود و ارسال ریلز ----------
-def download_and_send_reel(chat_id, url, reply_to=None):
-    """دانلود ریلز اینستاگرام و ارسال آن به سروش پلاس"""
+def _make_instaloader(tmpdir: str) -> instaloader.Instaloader:
     L = instaloader.Instaloader(
         download_videos=True,
         download_video_thumbnails=False,
         download_geotags=False,
         download_comments=False,
         save_metadata=False,
-        post_metadata_txt_pattern="",
+        post_metadata_txt_pattern=None,
     )
-    
-    # استخراج shortcode از لینک
-    # مثال: https://www.instagram.com/reel/ABC123/ -> ABC123
-    match = re.search(r"instagram\.com/(?:reel|p)/([^/?]+)", url)
-    if not match:
+    L.dirname_pattern = os.path.join(tmpdir, "{target}")
+
+    # اگر session داریم، لود کن
+    if IG_SESSION_FILE and os.path.exists(IG_SESSION_FILE):
+        try:
+            L.load_session_from_file(IG_USER, IG_SESSION_FILE)
+            print("[IG] session loaded", flush=True)
+        except Exception as e:
+            print(f"[IG session load failed] {e}", flush=True)
+    elif IG_USER:
+        try:
+            L.login(IG_USER, os.environ["IG_PASS"])
+            print("[IG] logged in", flush=True)
+        except Exception as e:
+            print(f"[IG login failed] {e}", flush=True)
+    else:
+        print("[IG] no session — may fail on most reels", flush=True)
+
+    return L
+
+
+def _find_mp4(root_dir: str):
+    for root, _, files in os.walk(root_dir):
+        for f in files:
+            if f.lower().endswith(".mp4"):
+                return os.path.join(root, f)
+    return None
+
+
+def download_and_send_reel(chat_id, text, reply_to=None):
+    shortcode = extract_ig_shortcode(text)
+    if not shortcode:
         send(chat_id, "⚠️ لینک اینستاگرام معتبر نیست.", reply_to)
         return
-    
-    shortcode = match.group(1)
-    
+
+    send(chat_id, "📥 در حال دانلود ویدیو از اینستاگرام...", reply_to)
+
     try:
-        # ایجاد پوشه موقت برای دانلود
         with tempfile.TemporaryDirectory() as tmpdir:
-            L.dirname_pattern = tmpdir
-            
-            # دریافت پست و دانلود
+            L = _make_instaloader(tmpdir)
             post = instaloader.Post.from_shortcode(L.context, shortcode)
             L.download_post(post, target=shortcode)
-            
-            # پیدا کردن فایل ویدیویی دانلود شده
-            video_file = None
-            for f in os.listdir(tmpdir):
-                if f.endswith('.mp4'):
-                    video_file = os.path.join(tmpdir, f)
-                    break
-            
+
+            video_file = _find_mp4(tmpdir)
             if not video_file:
                 send(chat_id, "⚠️ ویدیویی برای ارسال پیدا نشد.", reply_to)
                 return
-            
-            # ارسال ویدیو
-            send(chat_id, "📥 در حال ارسال ویدیو...", reply_to)
-            result = send_video(chat_id, video_file, reply_to=reply_to)
-            
+
+            size_mb = os.path.getsize(video_file) / (1024 * 1024)
+            if size_mb > 50:
+                send(chat_id, f"⚠️ فایل خیلی بزرگه ({size_mb:.1f}MB).", reply_to)
+                return
+
+            result = upload_and_send_video(
+                chat_id, video_file, caption=None, reply_to=reply_to
+            )
             if not result.get("ok"):
                 send(chat_id, "⚠️ خطا در ارسال ویدیو.", reply_to)
-                
+
+    except instaloader.exceptions.LoginRequiredException:
+        send(chat_id, "⚠️ برای دانلود این پست، ادمین باید وارد اینستاگرام بشه.", reply_to)
+    except instaloader.exceptions.ProfileNotExistsException:
+        send(chat_id, "⚠️ این پست وجود نداره.", reply_to)
+    except instaloader.exceptions.PrivateProfileNotFollowedException:
+        send(chat_id, "⚠️ این پست از اکانت خصوصیه.", reply_to)
     except Exception as e:
         print(f"[REEL ERROR] {e}", flush=True)
         send(chat_id, f"⚠️ خطا در دانلود ریلز: {str(e)[:100]}", reply_to)
 
+
+# ---------- نرمال‌سازی آپدیت روبیکا ----------
+def normalize_update(u: dict):
+    """
+    روبیکا در وب‌هوک ساختاری مثل:
+      {"update": {"type": "NewMessage", "chat_id": "...", "new_message": {...}}}
+    برمی‌گردونه. برای getUpdates هم معمولاً همین شکل تو یه لیست هست.
+    این تابع اون رو به dict ساده تبدیل می‌کنه.
+    """
+    upd = u.get("update") if isinstance(u, dict) else None
+    if not upd:
+        return None
+    if upd.get("type") != "NewMessage":
+        return None
+    nm = upd.get("new_message") or {}
+    text = (nm.get("text") or "").strip()
+    if not text:
+        return None
+    return {
+        "chat_id": upd.get("chat_id"),
+        "message_id": nm.get("message_id"),
+        "sender_id": nm.get("sender_id"),
+        "text": text,
+    }
+
+
 # ---------- حلقه اصلی ----------
 def bot_loop():
-    offset = 0
+    start_id = None
     print("BOT STARTED", flush=True)
+
     while True:
         try:
-            res = api("getUpdates", offset=offset, timeout=30,
-                      limit=100, allowed_updates=["message"])
+            params = {}
+            if start_id is not None:
+                params["start_id"] = start_id
+            res = api("getUpdates", **params)
+
             if not res.get("ok"):
                 time.sleep(3)
                 continue
 
-            for u in res.get("result", []):
-                offset = u["update_id"] + 1
-                m = u.get("message")
-                if not m:
+            # روبیکا معمولاً result یا updates برمی‌گردونه
+            updates = res.get("result") or res.get("updates") or []
+            next_id = res.get("next_id") or res.get("start_id")
+
+            for u in updates:
+                info = normalize_update(u)
+                if not info:
                     continue
 
-                txt = (m.get("text") or "").strip()
-                cid = m["chat"]["id"]
+                cid = info["chat_id"]
+                txt = info["text"]
+                mid = info["message_id"]
 
-                if not txt:
+                # فیلتر الفاظ
+                if is_profane(txt):
+                    send(cid, "⚠️ پیام شما حاوی الفاظ نامناسب است.", mid)
                     continue
 
-                # ✅ فیلتر الفاظ رکیک
-                if profanity_filter.contains_profanity(txt):
-                    send(cid, "⚠️ خطا: پیام شما حاوی الفاظ نامناسب است.", m["message_id"])
-                    continue
-
-                # ✅ تشخیص لینک ریلز اینستاگرام
-                if is_instagram_reel(txt):
-                    download_and_send_reel(cid, txt, m["message_id"])
+                # لینک اینستاگرام
+                if extract_ig_shortcode(txt):
+                    threading.Thread(
+                        target=download_and_send_reel,
+                        args=(cid, txt, mid),
+                        daemon=True,
+                    ).start()
                     continue
 
                 if txt.startswith("/start"):
-                    send(cid,
-                         "سلام! 👋\n"
-                         "• متن انگلیسی بفرست تا ترجمه کنم\n"
-                         "• بنویس «قیمت» تا قیمت دلار، طلا و سکه رو بفرستم\n"
-                         "• لینک ریلز اینستاگرام بفرست تا دانلود و ارسال کنم",
-                         m["message_id"])
+                    send(
+                        cid,
+                        "سلام! 👋\n"
+                        "• متن انگلیسی بفرست تا ترجمه کنم\n"
+                        "• بنویس «قیمت» تا قیمت دلار، طلا و سکه رو بفرستم\n"
+                        "• لینک ریلز اینستاگرام بفرست تا دانلود و ارسال کنم",
+                        mid,
+                    )
 
                 elif "قیمت" in txt or "price" in txt.lower():
-                    send(cid, get_prices(), m["message_id"])
+                    send(cid, get_prices(), mid)
 
                 elif is_english(txt):
-                    send(cid, translate(txt), m["message_id"])
+                    send(cid, translate(txt), mid)
 
                 else:
-                    send(cid,
-                         "لطفاً انگلیسی بفرست تا ترجمه کنم، بنویس «قیمت»، یا لینک ریلز اینستاگرام بفرست.",
-                         m["message_id"])
+                    send(
+                        cid,
+                        "لطفاً انگلیسی بفرست تا ترجمه کنم، بنویس «قیمت»، "
+                        "یا لینک ریلز اینستاگرام بفرست.",
+                        mid,
+                    )
+
+            # ذخیره start_id برای درخواست بعدی
+            if next_id is not None:
+                start_id = next_id
 
         except Exception as e:
-            print(e, flush=True)
+            print(f"[LOOP ERROR] {e}", flush=True)
             time.sleep(3)
 
+
+# ---------- اجرا ----------
 if __name__ == "__main__":
     threading.Thread(target=bot_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
