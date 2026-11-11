@@ -12,7 +12,7 @@ import translators as ts
 import instaloader
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "CJAGGI0PARDYRLWTDYMRRBRZXMEKDDWSROEWSDHGVFPZVPIOUFGBBBIVHNVVBPKN")
-API_BASE = f"https://api.rubika.ir/bot{BOT_TOKEN}"
+API_BASE = f"https://botapi.rubika.ir/v3/{BOT_TOKEN}"
 
 app = Flask(__name__)
 
