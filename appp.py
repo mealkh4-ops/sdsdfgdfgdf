@@ -308,36 +308,24 @@ def download_and_send_reel(chat_id, text, reply_to=None):
 # نرمال‌سازی آپدیت روبیکا
 # ============================================================
 def normalize_update(u):
+    """ساختار واقعی روبیکا: {"type": "NewMessage", "chat_id": "...", "new_message": {...}}"""
     if not isinstance(u, dict):
         return None
-
-    if isinstance(u.get("update"), dict):
-        upd = u["update"]
-    elif u.get("type") == "NewMessage":
-        upd = u
-    else:
+    if u.get("type") != "NewMessage":
         return None
-
-    if upd.get("type") != "NewMessage":
-        return None
-
-    nm = upd.get("new_message") or {}
+    nm = u.get("new_message") or {}
     text = (nm.get("text") or "").strip()
     if not text:
         return None
-
-    chat_id = upd.get("chat_id") or nm.get("chat_id")
-    message_id = nm.get("message_id") or upd.get("message_id")
+    chat_id = u.get("chat_id") or nm.get("chat_id")
     if not chat_id:
         return None
-
     return {
         "chat_id": chat_id,
-        "message_id": message_id,
-        "sender_id": nm.get("sender_id") or upd.get("sender_id"),
+        "message_id": nm.get("message_id"),
+        "sender_id": nm.get("sender_id"),
         "text": text,
     }
-
 
 # ============================================================
 # پردازش یک پیام
@@ -397,13 +385,15 @@ def bot_loop():
 
             res = api("getUpdates", **params)
 
-            if not res.get("ok"):
+            # ✅ ساختار واقعی: {"status": "OK", "data": {"updates": [...], ...}}
+            if res.get("status") != "OK":
                 print(f"[GETUPDATES FAIL] {str(res)[:300]}", flush=True)
                 time.sleep(5)
                 continue
 
-            updates = res.get("result") or res.get("updates") or []
-            next_id = res.get("next_id") or res.get("start_id")
+            data = res.get("data") or {}
+            updates = data.get("updates") or []
+            next_id = data.get("next_id") or data.get("start_id")
 
             if updates:
                 print(f"[GETUPDATES] got {len(updates)} update(s)", flush=True)
@@ -412,14 +402,16 @@ def bot_loop():
                 empty_polls += 1
                 if empty_polls % 10 == 1:
                     print(
-                        f"[GETUPDATES] empty (poll #{empty_polls}) keys={list(res.keys())}",
+                        f"[GETUPDATES] empty (poll #{empty_polls}) keys={list(data.keys())}",
                         flush=True,
                     )
 
             for u in updates:
                 info = normalize_update(u)
                 if not info:
-                    print(f"[SKIP UPDATE] {str(u)[:300]}", flush=True)
+                    # آپدیت‌های StartedBot و غیره رو نادیده بگیر
+                    if u.get("type") not in ("StartedBot", "StoppedBot"):
+                        print(f"[SKIP UPDATE] {str(u)[:300]}", flush=True)
                     continue
                 try:
                     handle_message(info["chat_id"], info["text"], info["message_id"])
@@ -432,7 +424,7 @@ def bot_loop():
         except Exception as e:
             print(f"[LOOP ERROR] {e}", flush=True)
             time.sleep(5)
-
+        
 
 # ============================================================
 # اجرا
