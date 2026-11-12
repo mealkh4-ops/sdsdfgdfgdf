@@ -11,23 +11,16 @@ import jdatetime
 from persian_text_guard import ProfanityFilter, WordList
 import translators as ts
 import instaloader
-from pyrate_limiter import Duration, Rate, Limiter, SQLiteBucket
 
 # ================== تنظیمات ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "70956629:jvLERRmmQGU4FxpB4G3pl12fPynPElOSpaE")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))  # شناسه چت ادمین را در Render ست کنید
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 API_BASE = f"https://api.splus.ir/bot{BOT_TOKEN}"
 
+FREE_LIMIT = 5  # تعداد لینک رایگان در ۲۴ ساعت
+
 app = Flask(__name__)
-
-# ================== فیلتر و ابزارها ==================
 profanity_filter = ProfanityFilter(WordList.persian_default())
-
-# محدودیت ۵ درخواست در ۲۴ ساعت (Leaky Bucket)
-rate = Rate(5, Duration.DAY)
-bucket = SQLiteBucket.init_from_file([rate], db_path="limits.db")
-limiter = Limiter(bucket)
-
 
 # ================== دیتابیس ==================
 def init_db():
@@ -43,6 +36,10 @@ def init_db():
                   is_active INTEGER DEFAULT 0,
                   expires_at TEXT,
                   license_key TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS daily_limits
+                 (chat_id INTEGER PRIMARY KEY,
+                  count INTEGER DEFAULT 0,
+                  reset_at TEXT)''')
     conn.commit()
     conn.close()
 
@@ -78,7 +75,7 @@ def get_user_license(chat_id):
     c.execute('SELECT is_active, expires_at, license_key FROM licenses WHERE chat_id=?', (chat_id,))
     row = c.fetchone()
     conn.close()
-    return row  # (is_active, expires_at, license_key)
+    return row
 
 def activate_license(chat_id, days=30):
     expires = (datetime.now() + timedelta(days=days)).isoformat()
@@ -94,16 +91,66 @@ def activate_license(chat_id, days=30):
     conn.close()
     return license_key
 
-def get_all_licenses():
+def get_all_users():
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
-    c.execute('''SELECT u.chat_id, u.first_name, u.username, l.is_active, l.expires_at, l.license_key
+    c.execute('''SELECT u.chat_id, u.first_name, u.username, u.is_blocked,
+                        l.is_active, l.expires_at, l.license_key
                  FROM users u LEFT JOIN licenses l ON u.chat_id = l.chat_id
                  ORDER BY u.chat_id''')
     rows = c.fetchall()
     conn.close()
     return rows
 
+# ================== محدودیت روزانه ==================
+def get_free_remaining(chat_id):
+    """تعداد لینک رایگان باقی‌مانده در ۲۴ ساعت را برمی‌گرداند."""
+    conn = sqlite3.connect('bot.db')
+    c = conn.cursor()
+    now = datetime.now()
+    c.execute('SELECT count, reset_at FROM daily_limits WHERE chat_id=?', (chat_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return FREE_LIMIT
+    count, reset_at = row
+    reset = datetime.fromisoformat(reset_at)
+    if now >= reset:
+        conn.close()
+        return FREE_LIMIT
+    conn.close()
+    return max(0, FREE_LIMIT - count)
+
+def increment_free_usage(chat_id):
+    """یک استفاده از سهمیه رایگان را ثبت می‌کند."""
+    conn = sqlite3.connect('bot.db')
+    c = conn.cursor()
+    now = datetime.now()
+    reset = now + timedelta(hours=24)
+    c.execute('SELECT count, reset_at FROM daily_limits WHERE chat_id=?', (chat_id,))
+    row = c.fetchone()
+    if row:
+        count, reset_at_str = row
+        old_reset = datetime.fromisoformat(reset_at_str)
+        if now >= old_reset:
+            count = 1
+            reset_str = reset.isoformat()
+        else:
+            count += 1
+            reset_str = reset_at_str
+        c.execute('UPDATE daily_limits SET count=?, reset_at=? WHERE chat_id=?',
+                  (count, reset_str, chat_id))
+    else:
+        c.execute('INSERT INTO daily_limits (chat_id, count, reset_at) VALUES (?, 1, ?)',
+                  (chat_id, reset.isoformat()))
+    conn.commit()
+    conn.close()
+
+def is_license_active(chat_id):
+    lic = get_user_license(chat_id)
+    if lic and lic[0] == 1:
+        return datetime.fromisoformat(lic[1]) > datetime.now()
+    return False
 
 # ================== API سروش ==================
 def api(method, **params):
@@ -128,32 +175,11 @@ def send_video(chat_id, video_path, caption=None, reply_to=None):
             data = {'chat_id': chat_id}
             if caption: data['caption'] = caption
             if reply_to: data['reply_to_message_id'] = reply_to
-            r = requests.post(url, data=data, files=files, timeout=120)
+            r = requests.post(url, data=data, files=files, timeout=180)
             return r.json()
     except Exception as e:
         print(f"[SEND VIDEO ERROR] {e}", flush=True)
         return {"ok": False}
-
-
-# ================== محدودیت و لایسنس ==================
-def can_send_reel(chat_id):
-    """بررسی اینکه آیا کاربر مجاز به ارسال ریلز است یا نه."""
-    lic = get_user_license(chat_id)
-    if lic and lic[0] == 1:  # لایسنس فعال
-        expires = datetime.fromisoformat(lic[1])
-        if expires > datetime.now():
-            return True, "license"
-        else:
-            # لایسنس منقضی شده
-            pass
-    
-    # بررسی محدودیت رایگان ۲۴ ساعته
-    try:
-        limiter.try_acquire(str(chat_id))
-        return True, "free"
-    except Exception:
-        return False, "limit"
-
 
 # ================== ترجمه ==================
 def translate(text, target="fa"):
@@ -209,7 +235,7 @@ def download_and_send_reel(chat_id, url, reply_to=None):
     match = re.search(r"instagram\.com/(?:reel|p)/([^/?]+)", url)
     if not match:
         send(chat_id, "⚠️ لینک معتبر نیست.", reply_to)
-        return
+        return False
     shortcode = match.group(1)
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -223,12 +249,14 @@ def download_and_send_reel(chat_id, url, reply_to=None):
                     break
             if not video_file:
                 send(chat_id, "⚠️ ویدیو پیدا نشد.", reply_to)
-                return
+                return False
             send(chat_id, "📥 در حال ارسال ویدیو...", reply_to)
-            send_video(chat_id, video_file, reply_to=reply_to)
+            result = send_video(chat_id, video_file, reply_to=reply_to)
+            return result.get("ok", False)
     except Exception as e:
         print(f"[REEL ERROR] {e}", flush=True)
         send(chat_id, f"⚠️ خطا: {str(e)[:100]}", reply_to)
+        return False
 
 # ================== حلقه اصلی ==================
 def bot_loop():
@@ -238,18 +266,23 @@ def bot_loop():
         try:
             res = api("getUpdates", offset=offset, timeout=30, limit=100, allowed_updates=["message"])
             if not res.get("ok"):
-                time.sleep(3); continue
+                time.sleep(3)
+                continue
 
             for u in res.get("result", []):
                 offset = u["update_id"] + 1
                 m = u.get("message")
-                print(f"[CHAT ID] {cid} | Name: {m['chat'].get('first_name', '')} | Text: {txt}", flush=True)
+                if not m:
+                    continue
 
-                if not m: continue
                 txt = (m.get("text") or "").strip()
                 cid = m["chat"]["id"]
-                
-                if not txt: continue
+
+                # ✅ حالا چاپ امن است (بعد از تعریف m و txt و cid)
+                print(f"[CHAT ID] {cid} | Name: {m['chat'].get('first_name', '')} | Text: {txt}", flush=True)
+
+                if not txt:
+                    continue
 
                 chat = m.get("chat", {})
                 save_user(cid, chat.get("first_name", ""), chat.get("username", ""))
@@ -260,53 +293,74 @@ def bot_loop():
                 # -------- دستورات ادمین --------
                 if cid == ADMIN_ID:
                     if txt == "/users":
-                        rows = get_all_licenses()
-                        report = "👥 کاربران:\n"
-                        for r in rows[:30]:
-                            status = "✅" if r[3] else "⏳"
-                            report += f"{status} {r[1]} | ID: {r[0]} | لایسنس: {r[5] or '—'}\n"
-                        send(cid, report, m["message_id"])
+                        rows = get_all_users()
+                        if not rows:
+                            send(cid, "هیچ کاربری ثبت نشده.", m["message_id"])
+                        else:
+                            report = "👥 لیست کاربران:\n───────────────\n"
+                            for r in rows[:30]:
+                                blocked = "🚫" if r[3] else "✅"
+                                lic_status = "💎 فعال" if (r[4] and r[5] and datetime.fromisoformat(r[5]) > datetime.now()) else "🆓 رایگان"
+                                report += f"{blocked} {r[1]} | ID: {r[0]} | {lic_status}\n"
+                            send(cid, report, m["message_id"])
                         continue
                     if txt.startswith("/activate "):
                         try:
                             target = int(txt.split(" ")[1])
                             key = activate_license(target, 30)
-                            send(cid, f"✅ لایسنس برای {target} فعال شد.\nکلید: {key}", m["message_id"])
-                        except:
+                            send(cid, f"✅ لایسنس ۳۰ روزه برای {target} فعال شد.\nکلید: {key}", m["message_id"])
+                        except Exception:
                             send(cid, "فرمت: /activate 123456789", m["message_id"])
                         continue
                     if txt.startswith("/block "):
                         try:
                             block_user(int(txt.split(" ")[1]))
                             send(cid, "کاربر مسدود شد.", m["message_id"])
-                        except:
+                        except Exception:
                             send(cid, "فرمت: /block 123456789", m["message_id"])
                         continue
 
                 # -------- فیلتر الفاظ --------
                 if profanity_filter.contains_profanity(txt):
-                    send(cid, "⚠️ خطا: الفاظ نامناسب.", m["message_id"])
+                    send(cid, "⚠️ خطا: پیام حاوی الفاظ نامناسب است.", m["message_id"])
                     continue
 
                 # -------- ریلز --------
                 if is_instagram_reel(txt):
-                    allowed, reason = can_send_reel(cid)
-                    if not allowed:
-                        send(cid, "⛔ محدودیت ۲۴ ساعته (۵ لینک) تمام شد.\nبرای اشتراک به ادمین پیام دهید.", m["message_id"])
-                        continue
-                    # اگر لایسنس فعال بود، محدودیت را اعمال نکن
-                    if reason == "free":
-                        pass  # محدودیت در can_send_reel اعمال شده
-                    download_and_send_reel(cid, txt, m["message_id"])
+                    licensed = is_license_active(cid)
+                    if not licensed:
+                        remaining = get_free_remaining(cid)
+                        if remaining <= 0:
+                            send(cid,
+                                 "⛔ محدودیت ۲۴ ساعته (۵ لینک رایگان) تمام شد.\n"
+                                 "برای خرید اشتراک ماهانه به ادمین پیام دهید.",
+                                 m["message_id"])
+                            continue
+
+                    success = download_and_send_reel(cid, txt, m["message_id"])
+                    if success and not licensed:
+                        increment_free_usage(cid)
+                        remaining = get_free_remaining(cid)
+                        send(cid,
+                             f"✅ ارسال موفق.\n"
+                             f"🔋 سهمیه رایگان باقی‌مانده: {remaining} از {FREE_LIMIT}",
+                             m["message_id"])
                     continue
 
                 # -------- سایر دستورات --------
                 if txt.startswith("/start"):
-                    lic = get_user_license(cid)
-                    lic_status = "✅ فعال" if (lic and lic[0] and datetime.fromisoformat(lic[1]) > datetime.now()) else "⏳ رایگان"
+                    licensed = is_license_active(cid)
+                    if licensed:
+                        lic = get_user_license(cid)
+                        lic_msg = f"✅ اشتراک فعال تا {lic[1][:10]}"
+                    else:
+                        remaining = get_free_remaining(cid)
+                        lic_msg = f"🆓 رایگان - سهمیه باقی‌مانده: {remaining} از {FREE_LIMIT}"
                     send(cid,
-                         f"سلام! 👋\nوضعیت: {lic_status}\n"
-                         "• انگلیسی بفرست تا ترجمه کنم\n• «قیمت» برای قیمت‌ها\n• لینک ریلز اینستاگرام بفرست (۵ بار در ۲۴ ساعت رایگان)",
+                         f"سلام! 👋\nوضعیت اشتراک: {lic_msg}\n\n"
+                         "• متن انگلیسی بفرست تا ترجمه کنم\n"
+                         "• بنویس «قیمت» تا قیمت‌های لحظه‌ای را بفرستم\n"
+                         "• لینک ریلز اینستاگرام بفرست تا دانلود و ارسال کنم",
                          m["message_id"])
                 elif "قیمت" in txt:
                     send(cid, get_prices(), m["message_id"])
@@ -314,7 +368,8 @@ def bot_loop():
                     send(cid, translate(txt), m["message_id"])
 
         except Exception as e:
-            print(e, flush=True); time.sleep(3)
+            print(f"[LOOP ERROR] {e}", flush=True)
+            time.sleep(3)
 
 if __name__ == "__main__":
     init_db()
