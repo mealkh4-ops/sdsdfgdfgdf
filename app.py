@@ -233,16 +233,6 @@ def download_and_send_reel(chat_id, url, reply_to=None):
 # ================== حلقه اصلی ==================
 def bot_loop():
     offset = 0
-# داخل حلقه for u in res.get("result", []):
-m = u.get("message")
-if not m:
-    continue
-
-txt = (m.get("text") or "").strip()
-cid = m["chat"]["id"]
-
-# ✅ این خط را اضافه کن تا شناسه چت در لاگ‌های Render چاپ شود
-print(f"[CHAT ID] {cid} | Name: {m['chat'].get('first_name', '')} | Text: {txt}", flush=True)
     print("BOT STARTED", flush=True)
     while True:
         try:
@@ -256,6 +246,7 @@ print(f"[CHAT ID] {cid} | Name: {m['chat'].get('first_name', '')} | Text: {txt}"
                 if not m: continue
                 txt = (m.get("text") or "").strip()
                 cid = m["chat"]["id"]
+                
                 if not txt: continue
 
                 chat = m.get("chat", {})
