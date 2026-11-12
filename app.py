@@ -243,6 +243,8 @@ def bot_loop():
             for u in res.get("result", []):
                 offset = u["update_id"] + 1
                 m = u.get("message")
+                print(f"[CHAT ID] {cid} | Name: {m['chat'].get('first_name', '')} | Text: {txt}", flush=True)
+
                 if not m: continue
                 txt = (m.get("text") or "").strip()
                 cid = m["chat"]["id"]
