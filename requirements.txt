@@ -5,3 +5,4 @@ deep-translator
 translators
 persian-text-guard
 instaloader
+pyrate-limiter
