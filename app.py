@@ -14,7 +14,7 @@ import instaloader
 
 # ================== تنظیمات ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "70956629:jvLERRmmQGU4FxpB4G3pl12fPynPElOSpaE")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "18351322"))
 API_BASE = f"https://api.splus.ir/bot{BOT_TOKEN}"
 
 FREE_LIMIT = 5  # تعداد لینک رایگان در ۲۴ ساعت
