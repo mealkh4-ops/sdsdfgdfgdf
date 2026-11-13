@@ -12,7 +12,7 @@ from persian_text_guard import ProfanityFilter, WordList
 import translators as ts
 import instaloader
 
-# ================== تنظیمات ==================
+# =================== تنظیمات ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "70956629:jvLERRmmQGU4FxpB4G3pl12fPynPElOSpaE")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "18351322"))
 API_BASE = f"https://api.splus.ir/bot{BOT_TOKEN}"
