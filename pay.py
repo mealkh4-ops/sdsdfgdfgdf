@@ -1,38 +1,143 @@
+import os
+import json
+import hmac
+import hashlib
+import sqlite3
+from urllib.parse import parse_qsl
+from flask import Flask, request, jsonify, render_template, redirect, url_for
 import requests
 
-# ۱. توکن خود را از ایتایار دریافت و اینجا قرار دهید
-TOKEN = "80377164:Qlas&(-2Dexs(-jJNLf7-r?xGhy-3alyx]-jC1n{f-cYZJvi-dncKts-$e3,~p-o&qX)t-$y/CqY-LHZbl7-4JVaVA-2GRm5*-3aX7Wo-P{RfsY-AQ2wAC-w8N?nM-Mm1B1m-d*EgTe-HzUK8.-Ny67EB-J4Wwvc-uKKD#i-2tg,OF-koT5jO-WTq[Vv-4uSFbo-1brgqv-UBaI!i-Z6/P84-L"
-# ۲. شناسه چتی که می‌خواهید پیام به آن ارسال شود (مثلاً شناسه کانال یا گروه)
-CHAT_ID = 9602119"
+app = Flask(__name__)
 
-def send_message(chat_id, text):
-    # آدرس دقیق API بر اساس مستندات ایتایار
-    url = f"https://eitaayar.ir/api/{TOKEN}/sendMessage"
-    
-    # پارامترهای ارسالی
-    payload = {
-        "chat_id": chat_id,
-        "text": text
-    }
-    
+# ================== تنظیمات ==================
+# این مقادیر را در Render به عنوان Environment Variable تنظیم کنید
+APP_TOKEN = os.environ.get("EITAA_APP_TOKEN", "TOKEN = "80377164:Qlas&(-2Dexs(-jJNLf7-r?xGhy-3alyx]-jC1n{f-cYZJvi-dncKts-$e3,~p-o&qX)t-$y/CqY-LHZbl7-4JVaVA-2GRm5*-3aX7Wo-P{RfsY-AQ2wAC-w8N?nM-Mm1B1m-d*EgTe-HzUK8.-Ny67EB-J4Wwvc-uKKD#i-2tg,OF-koT5jO-WTq[Vv-4uSFbo-1brgqv-UBaI!i-Z6/P84-L"")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Ali")
+DATABASE = "users.db"
+
+# ================== دیتابیس ==================
+def init_db():
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        chat_id INTEGER PRIMARY KEY,
+        first_name TEXT,
+        username TEXT,
+        registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    conn.commit()
+    conn.close()
+
+def add_user(chat_id, first_name="", username=""):
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO users (chat_id, first_name, username) VALUES (?, ?, ?)",
+              (chat_id, first_name, username))
+    conn.commit()
+    conn.close()
+
+def get_all_users():
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("SELECT chat_id FROM users")
+    users = [row[0] for row in c.fetchall()]
+    conn.close()
+    return users
+
+# ================== اعتبارسنجی initData ==================
+def verify_init_data(init_data_str, bot_token):
     try:
-        # ارسال درخواست POST
-        response = requests.post(url, data=payload, timeout=10)
-        response.raise_for_status() # بررسی خطاهای HTTP
-        
-        result = response.json()
-        
-        if result.get("ok"):
-            print("پیام با موفقیت ارسال شد.")
-            return True
-        else:
-            print(f"خطا در ارسال: {result}")
-            return False
-            
-    except requests.exceptions.RequestException as e:
-        print(f"خطای شبکه یا اتصال: {e}")
-        return False
+        params = dict(parse_qsl(init_data_str, keep_blank_values=True))
+        received_hash = params.pop('hash', None)
+        if not received_hash:
+            return None
 
-# ۳. فراخوانی تابع برای ارسال پاسخ
-# این کد را می‌توانید در هر جایی که منطق تشخیص «سلام» را پیاده‌سازی کردید، صدا بزنید
-send_message(CHAT_ID, "علیک سلام")
+        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
+        secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+        calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+        if calculated_hash == received_hash:
+            user_json = json.loads(params.get('user', '{}'))
+            return user_json
+        return None
+    except Exception as e:
+        print(f"Error verifying initData: {e}")
+        return None
+
+# ================== API برای برنامک ==================
+@app.route('/register-user', methods=['POST'])
+def register_user():
+    """این endpoint توسط برنامک (سمت کلاینت) فراخوانی می‌شود"""
+    data = request.json
+    init_data = data.get('initData')
+
+    if not init_data:
+        return jsonify({"status": "error", "message": "initData missing"}), 400
+
+    user = verify_init_data(init_data, APP_TOKEN)
+    if user and user.get('id'):
+        add_user(
+            chat_id=user['id'],
+            first_name=user.get('first_name', ''),
+            username=user.get('username', '')
+        )
+        print(f"✅ کاربر جدید ثبت شد: {user['id']}")
+        return jsonify({"status": "ok", "chat_id": user['id']})
+    else:
+        return jsonify({"status": "error", "message": "Invalid initData"}), 403
+
+# ================== پنل ادمین ==================
+@app.route('/admin', methods=['GET', 'POST'])
+def admin_panel():
+    if request.method == 'POST':
+        password = request.form.get('password')
+        if password != ADMIN_PASSWORD:
+            return "رمز عبور اشتباه است", 403
+
+        image_url = request.form.get('image_url')
+        caption = request.form.get('caption')
+
+        if not image_url:
+            return "لطفاً آدرس عکس را وارد کنید", 400
+
+        users = get_all_users()
+        if not users:
+            return "هیچ کاربری ثبت نشده است", 400
+
+        success_count = 0
+        for chat_id in users:
+            try:
+                url = "https://eitaayar.ir/api/app/sendFile"
+                payload = {
+                    "token": APP_TOKEN,
+                    "chat_id": chat_id,
+                    "file": image_url,
+                    "caption": caption
+                }
+                response = requests.post(url, json=payload, timeout=15)
+                result = response.json()
+                if result.get("ok") == True:
+                    success_count += 1
+                else:
+                    print(f"خطا در ارسال به {chat_id}: {result}")
+            except Exception as e:
+                print(f"خطا در ارسال به {chat_id}: {e}")
+
+        return f"پیام به {success_count} از {len(users)} کاربر ارسال شد."
+
+    return render_template('admin.html')
+
+@app.route('/users')
+def list_users():
+    users = get_all_users()
+    return jsonify({"count": len(users), "chat_ids": users})
+
+@app.route('/')
+def index():
+    return redirect(url_for('admin_panel'))
+
+# ================== راه‌اندازی ==================
+init_db()
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
