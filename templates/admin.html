@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>پنل ادمین</title>
+    <style>
+        body { font-family: Tahoma, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; }
+        input, textarea { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; }
+        button { background: #EF7F1A; color: white; padding: 12px 20px; border: none; cursor: pointer; }
+        label { font-weight: bold; margin-top: 15px; display: block; }
+    </style>
+</head>
+<body>
+    <h2>پنل ارسال پیام</h2>
+    <form method="POST">
+        <label>رمز عبور:</label>
+        <input type="password" name="password" required>
+
+        <label>آدرس عکس (URL):</label>
+        <input type="url" name="image_url" placeholder="https://example.com/image.jpg" required>
+
+        <label>کپشن:</label>
+        <textarea name="caption" rows="4" placeholder="متن همراه عکس..."></textarea>
+
+        <button type="submit">ارسال به همه کاربران</button>
+    </form>
+</body>
+</html>
