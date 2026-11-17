@@ -131,6 +131,28 @@ def list_users():
 # ================== پنل ادمین ==================
 @app.route('/admin', methods=['GET', 'POST'])
 def admin_panel():
+  for chat_id in users:
+    try:
+        # --- تغییر موقت برای تست ---
+        url = "https://eitaayar.ir/api/app/sendMessage" 
+        payload = {
+            "token": APP_TOKEN,
+            "chat_id": chat_id,
+            "text": "این یک پیام تست است."
+        }
+        # ---------------------------
+        
+        response = requests.post(url, json=payload, timeout=15)
+        result = response.json()
+        
+        print(f"پاسخ ایتا برای {chat_id}: {result}")
+        
+        if result.get("ok") == True:
+            success_count += 1
+        else:
+            print(f"خطا در ارسال به {chat_id}: {result}")
+    except Exception as e:
+        print(f"خطا در ارسال به {chat_id}: {e}")
     if request.method == 'POST':
         password = request.form.get('password')
         if password != ADMIN_PASSWORD:
