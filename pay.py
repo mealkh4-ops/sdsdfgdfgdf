@@ -110,6 +110,10 @@ def index():
     """
     return Response(html_content, mimetype='text/html')
 
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
+
 @app.route('/register-user', methods=['POST'])
 def register_user():
     data = request.get_json(silent=True) or {}
@@ -142,11 +146,10 @@ def admin_panel():
         if not hmac.compare_digest(password, ADMIN_PASSWORD):
             return "رمز عبور اشتباه است", 403
 
-        image_url = (request.form.get('image_url') or '').strip()
-        caption = request.form.get('caption', '')
+        message_text = (request.form.get('message') or '').strip()
 
-        if not image_url:
-            return "لطفاً آدرس عکس را وارد کنید", 400
+        if not message_text:
+            return "لطفاً متن پیام را وارد کنید", 400
 
         users = get_all_users()
         if not users:
@@ -155,12 +158,11 @@ def admin_panel():
         success_count = 0
         for chat_id in users:
             try:
-                url = "https://eitaayar.ir/api/app/sendFile"
+                url = "https://eitaayar.ir/api/app/sendMessage"
                 payload = {
                     "token": APP_TOKEN,
                     "chat_id": chat_id,
-                    "file": image_url,
-                    "caption": caption,
+                    "text": message_text,
                 }
                 response = requests.post(url, json=payload, timeout=15)
                 result = response.json()
@@ -169,9 +171,9 @@ def admin_panel():
                 if result.get("ok") is True:
                     success_count += 1
                 else:
-                    print(f"خطا در ارسال به {chat_id}: {result}")
+                    print(f"❌ خطا برای {chat_id}: {result.get('description', result)}")
             except Exception as e:
-                print(f"خطا در ارسال به {chat_id}: {e}")
+                print(f"❌ خطا در ارسال به {chat_id}: {e}")
 
         return f"پیام به {success_count} از {len(users)} کاربر ارسال شد."
 
@@ -195,11 +197,8 @@ def admin_panel():
             <label>رمز عبور:</label>
             <input type="password" name="password" required>
 
-            <label>آدرس عکس (URL):</label>
-            <input type="url" name="image_url" placeholder="https://example.com/image.jpg" required>
-
-            <label>کپشن:</label>
-            <textarea name="caption" rows="4" placeholder="متن همراه عکس..."></textarea>
+            <label>متن پیام:</label>
+            <textarea name="message" rows="6" placeholder="متن پیام..." required></textarea>
 
             <button type="submit">ارسال به همه کاربران</button>
         </form>
