@@ -5,7 +5,6 @@ import hashlib
 import sqlite3
 from urllib.parse import parse_qsl
 from flask import Flask, request, jsonify, render_template, redirect, url_for
-import requests
 
 app = Flask(__name__)
 
@@ -134,8 +133,8 @@ def list_users():
 
 @app.route('/')
 def index():
-    return redirect(url_for('admin_panel'))
-
+    # به جای ریدایرکت به ادمین، فایل HTML را نشان بده
+    return render_template('index.html') 
 # ================== راه‌اندازی ==================
 init_db()
 
