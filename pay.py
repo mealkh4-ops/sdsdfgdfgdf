@@ -4,14 +4,15 @@ import hmac
 import hashlib
 import sqlite3
 from urllib.parse import parse_qsl
-from flask import Flask, request, jsonify, render_template, redirect, url_for
+from flask import Flask, request, jsonify, render_template, redirect, url_for, Response
+import requests
 
 app = Flask(__name__)
 
 # ================== تنظیمات ==================
 # این مقادیر را در Render به عنوان Environment Variable تنظیم کنید
 APP_TOKEN = os.environ.get("EITAA_APP_TOKEN", "80377164:Qlas&(-2Dexs(-jJNLf7-r?xGhy-3alyx]-jC1n{f-cYZJvi-dncKts-$e3,~p-o&qX)t-$y/CqY-LHZbl7-4JVaVA-2GRm5*-3aX7Wo-P{RfsY-AQ2wAC-w8N?nM-Mm1B1m-d*EgTe-HzUK8.-Ny67EB-J4Wwvc-uKKD#i-2tg,OF-koT5jO-WTq[Vv-4uSFbo-1brgqv-UBaI!i-Z6/P84-L")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Ali")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ali")
 DATABASE = "users.db"
 
 # ================== دیتابیس ==================
@@ -63,10 +64,47 @@ def verify_init_data(init_data_str, bot_token):
         print(f"Error verifying initData: {e}")
         return None
 
-# ================== API برای برنامک ==================
+# ================== مسیرهای برنامک ==================
+@app.route('/')
+def index():
+    # صفحه HTML را به صورت مستقیم برمی‌گرداند تا نیازی به فایل index.html نباشد
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="fa" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>برنامک من</title>
+        <script src="https://developer.eitaa.com/eitaa-web-app.js"></script>
+        <script>
+            if (window.Eitaa && window.Eitaa.WebApp) {
+                const initData = window.Eitaa.WebApp.initData;
+                if (initData) {
+                    fetch('https://sdsdfgdfgdf-1.onrender.com/register-user', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ initData: initData })
+                    })
+                    .then(response => response.json())
+                    .then(data => console.log('پاسخ سرور:', data))
+                    .catch(error => console.error('خطا:', error));
+                }
+            }
+        </script>
+        <style>
+            body { font-family: Tahoma, sans-serif; text-align: center; padding: 50px; }
+        </style>
+    </head>
+    <body>
+        <h1>سلام! به برنامک ما خوش آمدید.</h1>
+        <p>اطلاعات شما در حال ثبت است...</p>
+    </body>
+    </html>
+    """
+    return Response(html_content, mimetype='text/html')
+
 @app.route('/register-user', methods=['POST'])
 def register_user():
-    """این endpoint توسط برنامک (سمت کلاینت) فراخوانی می‌شود"""
     data = request.json
     init_data = data.get('initData')
 
@@ -84,6 +122,11 @@ def register_user():
         return jsonify({"status": "ok", "chat_id": user['id']})
     else:
         return jsonify({"status": "error", "message": "Invalid initData"}), 403
+
+@app.route('/users')
+def list_users():
+    users = get_all_users()
+    return jsonify({"count": len(users), "chat_ids": users})
 
 # ================== پنل ادمین ==================
 @app.route('/admin', methods=['GET', 'POST'])
@@ -104,42 +147,63 @@ def admin_panel():
             return "هیچ کاربری ثبت نشده است", 400
 
         success_count = 0
-      for chat_id in users:
-          try:
-        url = "https://eitaayar.ir/api/app/sendFile"
-        payload = {
-            "token": APP_TOKEN,
-            "chat_id": chat_id,
-            "file": image_url,
-            "caption": caption
-        }
-        response = requests.post(url, json=payload, timeout=15)
-        result = response.json()
-        
-        # این خط را اضافه کنید تا پاسخ دقیق ایتا را ببینید
-        print(f"پاسخ ایتا برای {chat_id}: {result}")
-        
-        if result.get("ok") == True:
-            success_count += 1
-    except Exception as e:
-        print(f"خطا در ارسال به {chat_id}: {e}")
-      
+        for chat_id in users:
+            try:
+                url = "https://eitaayar.ir/api/app/sendFile"
+                payload = {
+                    "token": APP_TOKEN,
+                    "chat_id": chat_id,
+                    "file": image_url,
+                    "caption": caption
+                }
+                response = requests.post(url, json=payload, timeout=15)
+                result = response.json()
+                
+                # چاپ پاسخ ایتا برای عیب‌یابی در لاگ‌های رندر
+                print(f"پاسخ ایتا برای {chat_id}: {result}")
+                
+                if result.get("ok") == True:
+                    success_count += 1
+                else:
+                    print(f"خطا در ارسال به {chat_id}: {result}")
             except Exception as e:
                 print(f"خطا در ارسال به {chat_id}: {e}")
 
         return f"پیام به {success_count} از {len(users)} کاربر ارسال شد."
 
-    return render_template('admin.html')
+    # اگر متد GET بود، فرم HTML را نشان بده
+    admin_html = """
+    <!DOCTYPE html>
+    <html lang="fa" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>پنل ادمین</title>
+        <style>
+            body { font-family: Tahoma, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; }
+            input, textarea { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; }
+            button { background: #EF7F1A; color: white; padding: 12px 20px; border: none; cursor: pointer; }
+            label { font-weight: bold; margin-top: 15px; display: block; }
+        </style>
+    </head>
+    <body>
+        <h2>پنل ارسال پیام</h2>
+        <form method="POST">
+            <label>رمز عبور:</label>
+            <input type="password" name="password" required>
 
-@app.route('/users')
-def list_users():
-    users = get_all_users()
-    return jsonify({"count": len(users), "chat_ids": users})
+            <label>آدرس عکس (URL):</label>
+            <input type="url" name="image_url" placeholder="https://example.com/image.jpg" required>
 
-@app.route('/')
-def index():
-    # به جای ریدایرکت به ادمین، فایل HTML را نشان بده
-    return render_template('index.html') 
+            <label>کپشن:</label>
+            <textarea name="caption" rows="4" placeholder="متن همراه عکس..."></textarea>
+
+            <button type="submit">ارسال به همه کاربران</button>
+        </form>
+    </body>
+    </html>
+    """
+    return Response(admin_html, mimetype='text/html')
+
 # ================== راه‌اندازی ==================
 init_db()
 
