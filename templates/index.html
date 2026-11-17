@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>برنامک من</title>
+
+    <!-- 1. اسکریپت ایتا (حتما اول باشد) -->
+    <script src="https://developer.eitaa.com/eitaa-web-app.js"></script>
+
+    <!-- 2. کد ارسال اطلاعات به سرور Render -->
+    <script>
+        if (window.Eitaa && window.Eitaa.WebApp) {
+            const initData = window.Eitaa.WebApp.initData;
+            if (initData) {
+                fetch('https://sdsdfgdfgdf-1.onrender.com/register-user', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ initData: initData })
+                })
+                .then(response => response.json())
+                .then(data => console.log('پاسخ سرور:', data))
+                .catch(error => console.error('خطا:', error));
+            }
+        }
+    </script>
+    
+    <style>
+        body { font-family: Tahoma, sans-serif; text-align: center; padding: 50px; }
+    </style>
+</head>
+<body>
+    <h1>سلام! به برنامک ما خوش آمدید.</h1>
+    <p>اطلاعات شما در حال ثبت است...</p>
+</body>
+</html>
