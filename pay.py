@@ -105,20 +105,25 @@ def admin_panel():
 
         success_count = 0
         for chat_id in users:
-            try:
-                url = "https://eitaayar.ir/api/app/sendFile"
-                payload = {
-                    "token": APP_TOKEN,
-                    "chat_id": chat_id,
-                    "file": image_url,
-                    "caption": caption
-                }
-                response = requests.post(url, json=payload, timeout=15)
-                result = response.json()
-                if result.get("ok") == True:
-                    success_count += 1
-                else:
-                    print(f"خطا در ارسال به {chat_id}: {result}")
+    try:
+        url = "https://eitaayar.ir/api/app/sendFile"
+        payload = {
+            "token": APP_TOKEN,
+            "chat_id": chat_id,
+            "file": image_url,
+            "caption": caption
+        }
+        response = requests.post(url, json=payload, timeout=15)
+        result = response.json()
+        
+        # این خط را اضافه کنید تا پاسخ دقیق ایتا را ببینید
+        print(f"پاسخ ایتا برای {chat_id}: {result}")
+        
+        if result.get("ok") == True:
+            success_count += 1
+    except Exception as e:
+        print(f"خطا در ارسال به {chat_id}: {e}")
+      
             except Exception as e:
                 print(f"خطا در ارسال به {chat_id}: {e}")
 
