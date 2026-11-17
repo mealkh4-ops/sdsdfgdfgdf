@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 # ================== تنظیمات ==================
 # این مقادیر را در Render به عنوان Environment Variable تنظیم کنید
-APP_TOKEN = os.environ.get("EITAA_APP_TOKEN", "80377164:Qlas&(-2Dexs(-jJNLf7-r?xGhy-3alyx]-jC1n{f-cYZJvi-dncKts-$e3,~p-o&qX)t-$y/CqY-LHZbl7-4JVaVA-2GRm5*-3aX7Wo-P{RfsY-AQ2wAC-w8N?nM-Mm1B1m-d*EgTe-HzUK8.-Ny67EB-J4Wwvc-uKKD#i-2tg,OF-koT5jO-WTq[Vv-4uSFbo-1brgqv-UBaI!i-Z6/P84-L")
+APP_TOKEN = os.environ.get("EITAA_APP_TOKEN", "80377164:Y]7AthSRN-ZF.Fzqa%S-%7@tVjurX-UtzCS9Ofs-K9G#@DfoA-j)NyMl7MT-bUmlm?5mh-vpW6RKNR6-r6&5jzC9j-e4YJ~ux,w-A$YFau0o?-BkG#A.[^K-w(sOirsRX-P0eNVoL5$-IGoVg4ec4-BcdMlpxrD-n0WPUxaoS-nDMZFxI{8-zbWuDG2aq-AP)tdElq,-kr")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "a")
 DATABASE = "users.db"
 
