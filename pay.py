@@ -4,7 +4,7 @@ import hmac
 import hashlib
 import sqlite3
 from urllib.parse import parse_qsl
-from flask import Flask, request, jsonify, render_template, redirect, url_for, Response
+from flask import Flask, request, jsonify, Response
 import requests
 
 app = Flask(__name__)
@@ -12,8 +12,13 @@ app = Flask(__name__)
 # ================== تنظیمات ==================
 # این مقادیر را در Render به عنوان Environment Variable تنظیم کنید
 APP_TOKEN = os.environ.get("EITAA_APP_TOKEN", "80377164:Qlas&(-2Dexs(-jJNLf7-r?xGhy-3alyx]-jC1n{f-cYZJvi-dncKts-$e3,~p-o&qX)t-$y/CqY-LHZbl7-4JVaVA-2GRm5*-3aX7Wo-P{RfsY-AQ2wAC-w8N?nM-Mm1B1m-d*EgTe-HzUK8.-Ny67EB-J4Wwvc-uKKD#i-2tg,OF-koT5jO-WTq[Vv-4uSFbo-1brgqv-UBaI!i-Z6/P84-L")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ali")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "a")
 DATABASE = "users.db"
+
+if not APP_TOKEN:
+    raise RuntimeError("EITAA_APP_TOKEN environment variable is not set!")
+if not ADMIN_PASSWORD:
+    raise RuntimeError("ADMIN_PASSWORD environment variable is not set!")
 
 # ================== دیتابیس ==================
 def init_db():
@@ -31,7 +36,11 @@ def init_db():
 def add_user(chat_id, first_name="", username=""):
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO users (chat_id, first_name, username) VALUES (?, ?, ?)",
+    c.execute("""INSERT INTO users (chat_id, first_name, username)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(chat_id) DO UPDATE SET
+                    first_name=excluded.first_name,
+                    username=excluded.username""",
               (chat_id, first_name, username))
     conn.commit()
     conn.close()
@@ -56,9 +65,8 @@ def verify_init_data(init_data_str, bot_token):
         secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
         calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
 
-        if calculated_hash == received_hash:
-            user_json = json.loads(params.get('user', '{}'))
-            return user_json
+        if hmac.compare_digest(calculated_hash, received_hash):
+            return json.loads(params.get('user', '{}'))
         return None
     except Exception as e:
         print(f"Error verifying initData: {e}")
@@ -67,7 +75,6 @@ def verify_init_data(init_data_str, bot_token):
 # ================== مسیرهای برنامک ==================
 @app.route('/')
 def index():
-    # صفحه HTML را به صورت مستقیم برمی‌گرداند تا نیازی به فایل index.html نباشد
     html_content = """
     <!DOCTYPE html>
     <html lang="fa" dir="rtl">
@@ -80,14 +87,14 @@ def index():
             if (window.Eitaa && window.Eitaa.WebApp) {
                 const initData = window.Eitaa.WebApp.initData;
                 if (initData) {
-                    fetch('https://sdsdfgdfgdf-1.onrender.com/register-user', {
+                    fetch(window.location.origin + '/register-user', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ initData: initData })
                     })
-                    .then(response => response.json())
-                    .then(data => console.log('پاسخ سرور:', data))
-                    .catch(error => console.error('خطا:', error));
+                    .then(r => r.json())
+                    .then(d => console.log('پاسخ سرور:', d))
+                    .catch(e => console.error('خطا:', e));
                 }
             }
         </script>
@@ -105,7 +112,7 @@ def index():
 
 @app.route('/register-user', methods=['POST'])
 def register_user():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     init_data = data.get('initData')
 
     if not init_data:
@@ -120,8 +127,7 @@ def register_user():
         )
         print(f"✅ کاربر جدید ثبت شد: {user['id']}")
         return jsonify({"status": "ok", "chat_id": user['id']})
-    else:
-        return jsonify({"status": "error", "message": "Invalid initData"}), 403
+    return jsonify({"status": "error", "message": "Invalid initData"}), 403
 
 @app.route('/users')
 def list_users():
@@ -131,35 +137,13 @@ def list_users():
 # ================== پنل ادمین ==================
 @app.route('/admin', methods=['GET', 'POST'])
 def admin_panel():
-  for chat_id in users:
-    try:
-        # --- تغییر موقت برای تست ---
-        url = "https://eitaayar.ir/api/app/sendMessage" 
-        payload = {
-            "token": APP_TOKEN,
-            "chat_id": chat_id,
-            "text": "این یک پیام تست است."
-        }
-        # ---------------------------
-        
-        response = requests.post(url, json=payload, timeout=15)
-        result = response.json()
-        
-        print(f"پاسخ ایتا برای {chat_id}: {result}")
-        
-        if result.get("ok") == True:
-            success_count += 1
-        else:
-            print(f"خطا در ارسال به {chat_id}: {result}")
-    except Exception as e:
-        print(f"خطا در ارسال به {chat_id}: {e}")
     if request.method == 'POST':
-        password = request.form.get('password')
-        if password != ADMIN_PASSWORD:
+        password = request.form.get('password', '')
+        if not hmac.compare_digest(password, ADMIN_PASSWORD):
             return "رمز عبور اشتباه است", 403
 
-        image_url = request.form.get('image_url')
-        caption = request.form.get('caption')
+        image_url = (request.form.get('image_url') or '').strip()
+        caption = request.form.get('caption', '')
 
         if not image_url:
             return "لطفاً آدرس عکس را وارد کنید", 400
@@ -176,15 +160,13 @@ def admin_panel():
                     "token": APP_TOKEN,
                     "chat_id": chat_id,
                     "file": image_url,
-                    "caption": caption
+                    "caption": caption,
                 }
                 response = requests.post(url, json=payload, timeout=15)
                 result = response.json()
-                
-                # چاپ پاسخ ایتا برای عیب‌یابی در لاگ‌های رندر
                 print(f"پاسخ ایتا برای {chat_id}: {result}")
-                
-                if result.get("ok") == True:
+
+                if result.get("ok") is True:
                     success_count += 1
                 else:
                     print(f"خطا در ارسال به {chat_id}: {result}")
@@ -193,12 +175,12 @@ def admin_panel():
 
         return f"پیام به {success_count} از {len(users)} کاربر ارسال شد."
 
-    # اگر متد GET بود، فرم HTML را نشان بده
     admin_html = """
     <!DOCTYPE html>
     <html lang="fa" dir="rtl">
     <head>
         <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>پنل ادمین</title>
         <style>
             body { font-family: Tahoma, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; }
