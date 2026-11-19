@@ -229,34 +229,41 @@ def is_instagram_reel(text):
     return bool(re.search(r"instagram\.com/(reel|p)/", text))
 
 def download_and_send_reel(chat_id, url, reply_to=None):
-    L = instaloader.Instaloader(download_videos=True, download_video_thumbnails=False,
-                                download_geotags=False, download_comments=False,
-                                save_metadata=False, post_metadata_txt_pattern="")
+    # ایجاد نمونه با تنظیمات بهتر
+    L = instaloader.Instaloader(
+        download_videos=True, 
+        download_video_thumbnails=False,
+        download_geotags=False, 
+        download_comments=False,
+        save_metadata=False, 
+        post_metadata_txt_pattern="",
+        request_timeout=30,
+        sleep=True  # افزودن تاخیر خودکار برای کاهش ریسک بلاک شدن
+    )
+    
+    # *** بخش مهم: بارگذاری سشن (در صورت وجود) ***
+    # ابتدا باید یک بار با اکانت خود لاگین کنید و سشن را ذخیره کنید
+    try:
+        # نام کاربری اکانت اینستاگرام خود را اینجا وارد کنید
+        L.load_session_from_file("YOUR_INSTAGRAM_USERNAME")
+    except FileNotFoundError:
+        # اگر فایل سشن وجود ندارد، یک بار لاگین کنید
+        # L.login("YOUR_INSTAGRAM_USERNAME", "YOUR_PASSWORD")
+        # L.save_session_to_file()
+        send(chat_id, "⚠️ خطای پیکربندی: سشن اینستاگرام یافت نشد.", reply_to)
+        return False
+
     match = re.search(r"instagram\.com/(?:reel|p)/([^/?]+)", url)
     if not match:
         send(chat_id, "⚠️ لینک معتبر نیست.", reply_to)
         return False
     shortcode = match.group(1)
+    
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             L.dirname_pattern = tmpdir
             post = instaloader.Post.from_shortcode(L.context, shortcode)
-            L.download_post(post, target=shortcode)
-            video_file = None
-            for f in os.listdir(tmpdir):
-                if f.endswith('.mp4'):
-                    video_file = os.path.join(tmpdir, f)
-                    break
-            if not video_file:
-                send(chat_id, "⚠️ ویدیو پیدا نشد.", reply_to)
-                return False
-            send(chat_id, "📥 در حال ارسال ویدیو...", reply_to)
-            result = send_video(chat_id, video_file, reply_to=reply_to)
-            return result.get("ok", False)
-    except Exception as e:
-        print(f"[REEL ERROR] {e}", flush=True)
-        send(chat_id, f"⚠️ خطا: {str(e)[:100]}", reply_to)
-        return False
+            # ... ادامه کد شما برای دانلود و ارسال
 
 # ================== حلقه اصلی ==================
 def bot_loop():
