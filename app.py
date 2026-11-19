@@ -10,12 +10,15 @@ from flask import Flask
 import jdatetime
 from persian_text_guard import ProfanityFilter, WordList
 import translators as ts
-import instaloader
 
 # =================== تنظیمات ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "70956629:jvLERRmmQGU4FxpB4G3pl12fPynPElOSpaE")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "18351322"))
 API_BASE = f"https://api.splus.ir/bot{BOT_TOKEN}"
+
+# FastSaver API
+FASTSAVER_API_KEY = os.environ.get("FASTSAVER_API_KEY", "fs_sk_8h1x6d2s5o4o2s7k7m1u6t3h2q4i")
+FASTSAVER_ENDPOINT = "https://api.fastsaver.io/v1/fetch"
 
 FREE_LIMIT = 5  # تعداد لینک رایگان در ۲۴ ساعت
 
@@ -104,7 +107,6 @@ def get_all_users():
 
 # ================== محدودیت روزانه ==================
 def get_free_remaining(chat_id):
-    """تعداد لینک رایگان باقی‌مانده در ۲۴ ساعت را برمی‌گرداند."""
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
     now = datetime.now()
@@ -122,7 +124,6 @@ def get_free_remaining(chat_id):
     return max(0, FREE_LIMIT - count)
 
 def increment_free_usage(chat_id):
-    """یک استفاده از سهمیه رایگان را ثبت می‌کند."""
     conn = sqlite3.connect('bot.db')
     c = conn.cursor()
     now = datetime.now()
@@ -216,7 +217,7 @@ def get_prices():
             "💰 قیمت‌های لحظه‌ای\n───────────────\n"
             f"💵 دلار: {find('price_dollar_rl', 'dollar_rl')} ریال\n───────────────\n"
             f"🥇 گرم طلا: {find('geram18')} ریال\n"
-            f"🪙 سکه: {find('sekee', 'sekee_buy', 'sekke_emami')} ریال\n"
+            f"🪙 سکه: {find('sekee', 'sekke_emami')} ریال\n"
             f"🪙 نیم: {find('nim', 'sekke_nim')} ریال\n"
             f"🪙 ربع: {find('rob', 'sekke_rob')} ریال\n───────────────\n"
             f"🕐 {iran_datetime_str()}"
@@ -224,73 +225,76 @@ def get_prices():
     except Exception as e:
         return f"⚠️ خطا: {e}"
 
-# # ================== ریلز ==================
+# ================== ریلز با FastSaver ==================
 def is_instagram_reel(text):
     return bool(re.search(r"instagram\.com/(reel|p)/", text))
 
 def download_and_send_reel(chat_id, url, reply_to=None):
-    L = instaloader.Instaloader(
-        download_videos=True,
-        download_video_thumbnails=False,
-        download_geotags=False,
-        download_comments=False,
-        save_metadata=False,
-        post_metadata_txt_pattern="",
-        request_timeout=30,
-    )
-
-    # --- بارگذاری سشن (اگر قبلاً ذخیره شده) ---
+    """دانلود ریلز با استفاده از FastSaver API (بدون نیاز به session اینستاگرام)"""
     try:
-        L.load_session_from_file("YOUR_INSTAGRAM_USERNAME")
-    except FileNotFoundError:
-        send(chat_id, "⚠️ خطای پیکربندی: سشن اینستاگرام یافت نشد.", reply_to)
-        return False
-    except Exception as e:
-        print(f"[SESSION ERROR] {e}", flush=True)
-        send(chat_id, "⚠️ خطا در بارگذاری سشن اینستاگرام.", reply_to)
-        return False
+        # ۱. درخواست به FastSaver برای دریافت لینک CDN
+        resp = requests.get(
+            FASTSAVER_ENDPOINT,
+            params={"url": url},
+            headers={"X-Api-Key": FASTSAVER_API_KEY},
+            timeout=30
+        )
+        data = resp.json()
 
-    # --- استخراج shortcode ---
-    match = re.search(r"instagram\.com/(?:reel|p)/([^/?]+)", url)
-    if not match:
-        send(chat_id, "⚠️ لینک معتبر نیست.", reply_to)
-        return False
-    shortcode = match.group(1)
+        # بررسی موفقیت (ok کلید اصلی موفقیت است، نه status code)
+        if not data.get("ok"):
+            error = data.get("detail", data.get("error", "خطای ناشناخته"))
+            send(chat_id, f"⚠️ {error}", reply_to)
+            return False
 
-    # --- دانلود و ارسال ---
-    try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            L.dirname_pattern = tmpdir
-            post = instaloader.Post.from_shortcode(L.context, shortcode)
-            L.download_post(post, target=shortcode)
-
-            video_file = None
-            for f in os.listdir(tmpdir):
-                if f.endswith('.mp4'):
-                    video_file = os.path.join(tmpdir, f)
-                    break
-
-            if not video_file:
-                send(chat_id, "⚠️ ویدیو پیدا نشد.", reply_to)
+        # بررسی اینکه آیا ویدیو است یا آلبوم
+        media_type = data.get("type", "")
+        if media_type == "album":
+            # آلبوم/کاروسل: آیتم اول را برمی‌داریم (معمولاً ویدیو یا تصویر)
+            items = data.get("items", [])
+            if not items:
+                send(chat_id, "⚠️ محتوایی پیدا نشد.", reply_to)
                 return False
+            download_url = items[0].get("download_url")
+        elif media_type in ("video", "image"):
+            download_url = data.get("download_url")
+        else:
+            send(chat_id, "⚠️ نوع محتوا پشتیبانی نمی‌شود.", reply_to)
+            return False
 
-            send(chat_id, "📥 در حال ارسال ویدیو...", reply_to)
-            result = send_video(chat_id, video_file, reply_to=reply_to)
-            return result.get("ok", False)
+        if not download_url:
+            send(chat_id, "⚠️ لینک دانلود دریافت نشد.", reply_to)
+            return False
 
-    except instaloader.exceptions.ProfileNotExistsException:
-        send(chat_id, "⚠️ پست یا پیج پیدا نشد.", reply_to)
+        # ۲. دانلود فایل از CDN (بدون مصرف اعتبار اضافی)
+        # نکته: لینک CDN کوتاه‌عمر است، باید فوراً دانلود شود [citation:2][citation:3]
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+            video_resp = requests.get(download_url, stream=True, timeout=(10, 60))
+            video_resp.raise_for_status()
+            for chunk in video_resp.iter_content(chunk_size=65536):
+                f.write(chunk)
+            video_path = f.name
+
+        # ۳. ارسال به کاربر
+        send(chat_id, "📥 در حال ارسال ویدیو...", reply_to)
+        result = send_video(chat_id, video_path, reply_to=reply_to)
+
+        # پاکسازی فایل موقت
+        os.unlink(video_path)
+        return result.get("ok", False)
+
+    except requests.exceptions.Timeout:
+        send(chat_id, "⚠️ زمان درخواست به پایان رسید.", reply_to)
         return False
-    except instaloader.exceptions.LoginRequiredException:
-        send(chat_id, "⚠️ برای این پست نیاز به لاگین است.", reply_to)
-        return False
-    except instaloader.exceptions.QueryReturnedNotFoundException:
-        send(chat_id, "⚠️ پست حذف شده یا خصوصی است.", reply_to)
+    except requests.exceptions.RequestException as e:
+        print(f"[FASTSAVER NETWORK ERROR] {e}", flush=True)
+        send(chat_id, "⚠️ خطا در ارتباط با سرویس دانلود.", reply_to)
         return False
     except Exception as e:
         print(f"[REEL ERROR] {e}", flush=True)
         send(chat_id, f"⚠️ خطا: {str(e)[:100]}", reply_to)
         return False
+
 # ================== حلقه اصلی ==================
 def bot_loop():
     offset = 0
@@ -311,7 +315,6 @@ def bot_loop():
                 txt = (m.get("text") or "").strip()
                 cid = m["chat"]["id"]
 
-                # ✅ حالا چاپ امن است (بعد از تعریف m و txt و cid)
                 print(f"[CHAT ID] {cid} | Name: {m['chat'].get('first_name', '')} | Text: {txt}", flush=True)
 
                 if not txt:
