@@ -4,10 +4,11 @@ import time
 import threading
 import requests
 import tempfile
-import sqlite3
 from datetime import datetime, timezone, timedelta
-from flask import Flask
 import jdatetime
+from flask import Flask
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from persian_text_guard import ProfanityFilter, WordList
 import translators as ts
 
@@ -21,137 +22,194 @@ FASTSAVER_API_KEY = os.environ.get("FASTSAVER_API_KEY", "fs_sk_8h1x6d2s5o4o2s7k7
 FASTSAVER_ENDPOINT = "https://api.fastsaver.io/v1/fetch"
 
 FREE_LIMIT = 5  # تعداد لینک رایگان در ۲۴ ساعت
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 app = Flask(__name__)
 profanity_filter = ProfanityFilter(WordList.persian_default())
 
-# ================== دیتابیس ==================
+# ================== روت سلامت ==================
+@app.route('/')
+@app.route('/health')
+@app.route('/Health')
+def health_check():
+    return "Bot is alive and running!", 200
+
+# ================== دیتابیس (PostgreSQL) ==================
+def get_db_connection():
+    if not DATABASE_URL:
+        raise Exception("DATABASE_URL is not set!")
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
+
 def init_db():
-    conn = sqlite3.connect('bot.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (chat_id INTEGER PRIMARY KEY,
-                  first_name TEXT,
-                  username TEXT,
-                  is_blocked INTEGER DEFAULT 0)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS licenses
-                 (chat_id INTEGER PRIMARY KEY,
-                  is_active INTEGER DEFAULT 0,
-                  expires_at TEXT,
-                  license_key TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS daily_limits
-                 (chat_id INTEGER PRIMARY KEY,
-                  count INTEGER DEFAULT 0,
-                  reset_at TEXT)''')
+    
+    # جدول کاربران
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                 chat_id BIGINT PRIMARY KEY,
+                 first_name TEXT,
+                 username TEXT,
+                 is_blocked INTEGER DEFAULT 0,
+                 license_key TEXT,
+                 license_expires_at TIMESTAMP WITH TIME ZONE
+                 )''')
+    
+    # جدول تاریخچه دانلودها
+    c.execute('''CREATE TABLE IF NOT EXISTS user_activity (
+                 id SERIAL PRIMARY KEY,
+                 chat_id BIGINT,
+                 url TEXT,
+                 action_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                 FOREIGN KEY (chat_id) REFERENCES users(chat_id)
+                 )''')
+                 
+    # جدول پیام‌های انگلیسی
+    c.execute('''CREATE TABLE IF NOT EXISTS messages_log (
+                 id SERIAL PRIMARY KEY,
+                 chat_id BIGINT,
+                 message_text TEXT,
+                 sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                 FOREIGN KEY (chat_id) REFERENCES users(chat_id)
+                 )''')
+    
+    # جدول محدودیت روزانه (اختیاری برای شمارش سریع‌تر)
+    c.execute('''CREATE TABLE IF NOT EXISTS daily_limits (
+                 chat_id BIGINT PRIMARY KEY,
+                 count INTEGER DEFAULT 0,
+                 reset_at TIMESTAMP WITH TIME ZONE,
+                 FOREIGN KEY (chat_id) REFERENCES users(chat_id)
+                 )''')
+                 
     conn.commit()
+    c.close()
     conn.close()
 
 def save_user(chat_id, first_name, username):
-    conn = sqlite3.connect('bot.db')
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('''INSERT INTO users (chat_id, first_name, username)
-                 VALUES (?, ?, ?)
+                 VALUES (%s, %s, %s)
                  ON CONFLICT(chat_id) DO UPDATE SET
-                 first_name=excluded.first_name,
-                 username=excluded.username''', (chat_id, first_name, username))
+                 first_name=EXCLUDED.first_name,
+                 username=EXCLUDED.username''', (chat_id, first_name, username))
     conn.commit()
+    c.close()
     conn.close()
 
 def is_user_blocked(chat_id):
-    conn = sqlite3.connect('bot.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT is_blocked FROM users WHERE chat_id=?', (chat_id,))
+    c.execute('SELECT is_blocked FROM users WHERE chat_id=%s', (chat_id,))
     row = c.fetchone()
+    c.close()
     conn.close()
     return row and row[0] == 1
 
 def block_user(chat_id):
-    conn = sqlite3.connect('bot.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute('UPDATE users SET is_blocked=1 WHERE chat_id=?', (chat_id,))
+    c.execute('UPDATE users SET is_blocked=1 WHERE chat_id=%s', (chat_id,))
     conn.commit()
+    c.close()
     conn.close()
 
 def get_user_license(chat_id):
-    conn = sqlite3.connect('bot.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT is_active, expires_at, license_key FROM licenses WHERE chat_id=?', (chat_id,))
+    c.execute('SELECT license_key, license_expires_at FROM users WHERE chat_id=%s', (chat_id,))
     row = c.fetchone()
+    c.close()
     conn.close()
     return row
 
 def activate_license(chat_id, days=30):
-    expires = (datetime.now() + timedelta(days=days)).isoformat()
+    expires = datetime.now(timezone.utc) + timedelta(days=days)
     license_key = f"LIC-{chat_id}-{int(time.time())}"
-    conn = sqlite3.connect('bot.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute('''INSERT INTO licenses (chat_id, is_active, expires_at, license_key)
-                 VALUES (?, 1, ?, ?)
-                 ON CONFLICT(chat_id) DO UPDATE SET
-                 is_active=1, expires_at=excluded.expires_at, license_key=excluded.license_key''',
-              (chat_id, expires, license_key))
+    c.execute('''UPDATE users SET license_key=%s, license_expires_at=%s WHERE chat_id=%s''',
+              (license_key, expires, chat_id))
     conn.commit()
+    c.close()
     conn.close()
     return license_key
 
+def is_license_active(chat_id):
+    lic = get_user_license(chat_id)
+    if lic and lic[1]:
+        return lic[1] > datetime.now(timezone.utc)
+    return False
+
 def get_all_users():
-    conn = sqlite3.connect('bot.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute('''SELECT u.chat_id, u.first_name, u.username, u.is_blocked,
-                        l.is_active, l.expires_at, l.license_key
-                 FROM users u LEFT JOIN licenses l ON u.chat_id = l.chat_id
-                 ORDER BY u.chat_id''')
+    c.execute('''SELECT chat_id, first_name, username, is_blocked, license_key, license_expires_at 
+                 FROM users ORDER BY chat_id''')
     rows = c.fetchall()
+    c.close()
     conn.close()
     return rows
 
 # ================== محدودیت روزانه ==================
 def get_free_remaining(chat_id):
-    conn = sqlite3.connect('bot.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    now = datetime.now()
-    c.execute('SELECT count, reset_at FROM daily_limits WHERE chat_id=?', (chat_id,))
+    now = datetime.now(timezone.utc)
+    c.execute('SELECT count, reset_at FROM daily_limits WHERE chat_id=%s', (chat_id,))
     row = c.fetchone()
     if not row:
+        c.close()
         conn.close()
         return FREE_LIMIT
     count, reset_at = row
-    reset = datetime.fromisoformat(reset_at)
-    if now >= reset:
+    if now >= reset_at:
+        c.close()
         conn.close()
         return FREE_LIMIT
+    c.close()
     conn.close()
     return max(0, FREE_LIMIT - count)
 
 def increment_free_usage(chat_id):
-    conn = sqlite3.connect('bot.db')
+    conn = get_db_connection()
     c = conn.cursor()
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     reset = now + timedelta(hours=24)
-    c.execute('SELECT count, reset_at FROM daily_limits WHERE chat_id=?', (chat_id,))
+    c.execute('SELECT count, reset_at FROM daily_limits WHERE chat_id=%s', (chat_id,))
     row = c.fetchone()
     if row:
-        count, reset_at_str = row
-        old_reset = datetime.fromisoformat(reset_at_str)
-        if now >= old_reset:
+        count, reset_at = row
+        if now >= reset_at:
             count = 1
-            reset_str = reset.isoformat()
+            reset_time = reset
         else:
             count += 1
-            reset_str = reset_at_str
-        c.execute('UPDATE daily_limits SET count=?, reset_at=? WHERE chat_id=?',
-                  (count, reset_str, chat_id))
+            reset_time = reset_at
+        c.execute('UPDATE daily_limits SET count=%s, reset_at=%s WHERE chat_id=%s',
+                  (count, reset_time, chat_id))
     else:
-        c.execute('INSERT INTO daily_limits (chat_id, count, reset_at) VALUES (?, 1, ?)',
-                  (chat_id, reset.isoformat()))
+        c.execute('INSERT INTO daily_limits (chat_id, count, reset_at) VALUES (%s, 1, %s)',
+                  (chat_id, reset))
     conn.commit()
+    c.close()
     conn.close()
 
-def is_license_active(chat_id):
-    lic = get_user_license(chat_id)
-    if lic and lic[0] == 1:
-        return datetime.fromisoformat(lic[1]) > datetime.now()
-    return False
+# ================== توابع لاگ‌گیری ==================
+def log_download(chat_id, url):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('INSERT INTO user_activity (chat_id, url) VALUES (%s, %s)', (chat_id, url))
+    conn.commit()
+    c.close()
+    conn.close()
+
+def log_message(chat_id, text):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('INSERT INTO messages_log (chat_id, message_text) VALUES (%s, %s)', (chat_id, text))
+    conn.commit()
+    c.close()
+    conn.close()
 
 # ================== API سروش ==================
 def api(method, **params):
@@ -230,9 +288,7 @@ def is_instagram_reel(text):
     return bool(re.search(r"instagram\.com/(reel|p)/", text))
 
 def download_and_send_reel(chat_id, url, reply_to=None):
-    """دانلود ریلز با استفاده از FastSaver API (بدون نیاز به session اینستاگرام)"""
     try:
-        # ۱. درخواست به FastSaver برای دریافت لینک CDN
         resp = requests.get(
             FASTSAVER_ENDPOINT,
             params={"url": url},
@@ -241,16 +297,13 @@ def download_and_send_reel(chat_id, url, reply_to=None):
         )
         data = resp.json()
 
-        # بررسی موفقیت (ok کلید اصلی موفقیت است، نه status code)
         if not data.get("ok"):
             error = data.get("detail", data.get("error", "خطای ناشناخته"))
             send(chat_id, f"⚠️ {error}", reply_to)
             return False
 
-        # بررسی اینکه آیا ویدیو است یا آلبوم
         media_type = data.get("type", "")
         if media_type == "album":
-            # آلبوم/کاروسل: آیتم اول را برمی‌داریم (معمولاً ویدیو یا تصویر)
             items = data.get("items", [])
             if not items:
                 send(chat_id, "⚠️ محتوایی پیدا نشد.", reply_to)
@@ -266,8 +319,6 @@ def download_and_send_reel(chat_id, url, reply_to=None):
             send(chat_id, "⚠️ لینک دانلود دریافت نشد.", reply_to)
             return False
 
-        # ۲. دانلود فایل از CDN (بدون مصرف اعتبار اضافی)
-        # نکته: لینک CDN کوتاه‌عمر است، باید فوراً دانلود شود [citation:2][citation:3]
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
             video_resp = requests.get(download_url, stream=True, timeout=(10, 60))
             video_resp.raise_for_status()
@@ -275,11 +326,8 @@ def download_and_send_reel(chat_id, url, reply_to=None):
                 f.write(chunk)
             video_path = f.name
 
-        # ۳. ارسال به کاربر
         send(chat_id, "📥 در حال ارسال ویدیو...", reply_to)
         result = send_video(chat_id, video_path, reply_to=reply_to)
-
-        # پاکسازی فایل موقت
         os.unlink(video_path)
         return result.get("ok", False)
 
@@ -294,11 +342,7 @@ def download_and_send_reel(chat_id, url, reply_to=None):
         print(f"[REEL ERROR] {e}", flush=True)
         send(chat_id, f"⚠️ خطا: {str(e)[:100]}", reply_to)
         return False
-# ================== روت سلامت برای جلوگیری از خواب ==================
-@app.route('/')
-@app.route('/health')
-def health_check():
-    return "Bot is alive and running!", 200
+
 # ================== حلقه اصلی ==================
 def bot_loop():
     offset = 0
@@ -331,7 +375,6 @@ def bot_loop():
                     continue
 
                 # -------- دستورات ادمین --------
-
                 if cid == ADMIN_ID:
                     if txt == "/users":
                         rows = get_all_users()
@@ -341,7 +384,7 @@ def bot_loop():
                             report = "👥 لیست کاربران:\n───────────────\n"
                             for r in rows[:30]:
                                 blocked = "🚫" if r[3] else "✅"
-                                lic_status = "💎 فعال" if (r[4] and r[5] and datetime.fromisoformat(r[5]) > datetime.now()) else "🆓 رایگان"
+                                lic_status = "💎 فعال" if (r[4] and r[5] and r[5] > datetime.now(timezone.utc)) else "🆓 رایگان"
                                 report += f"{blocked} {r[1]} | ID: {r[0]} | {lic_status}\n"
                             send(cid, report, m["message_id"])
                         continue
@@ -379,13 +422,15 @@ def bot_loop():
                             continue
 
                     success = download_and_send_reel(cid, txt, m["message_id"])
-                    if success and not licensed:
-                        increment_free_usage(cid)
-                        remaining = get_free_remaining(cid)
-                        send(cid,
-                             f"✅ ارسال موفق.\n"
-                             f"🔋 سهمیه رایگان باقی‌مانده: {remaining} از {FREE_LIMIT}",
-                             m["message_id"])
+                    if success:
+                        log_download(cid, txt)  # ثبت لینک دانلود شده
+                        if not licensed:
+                            increment_free_usage(cid)
+                            remaining = get_free_remaining(cid)
+                            send(cid,
+                                 f"✅ ارسال موفق.\n"
+                                 f"🔋 سهمیه رایگان باقی‌مانده: {remaining} از {FREE_LIMIT}",
+                                 m["message_id"])
                     continue
 
                 # -------- سایر دستورات --------
@@ -406,12 +451,15 @@ def bot_loop():
                 elif "قیمت" in txt:
                     send(cid, get_prices(), m["message_id"])
                 else:
+                    # ثبت پیام انگلیسی قبل از ترجمه
+                    log_message(cid, txt)
                     send(cid, translate(txt), m["message_id"])
 
         except Exception as e:
             print(f"[LOOP ERROR] {e}", flush=True)
             time.sleep(3)
 
+# ================== اجرای برنامه ==================
 if __name__ == "__main__":
     init_db()
     threading.Thread(target=bot_loop, daemon=True).start()
