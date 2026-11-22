@@ -6,3 +6,4 @@ translators
 persian-text-guard
 instaloader
 pyrate-limiter
+psycopg2-binary
