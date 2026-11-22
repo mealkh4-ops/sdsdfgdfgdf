@@ -294,7 +294,11 @@ def download_and_send_reel(chat_id, url, reply_to=None):
         print(f"[REEL ERROR] {e}", flush=True)
         send(chat_id, f"⚠️ خطا: {str(e)[:100]}", reply_to)
         return False
-
+# ================== روت سلامت برای جلوگیری از خواب ==================
+@app.route('/')
+@app.route('/health')
+def health_check():
+    return "Bot is alive and running!", 200
 # ================== حلقه اصلی ==================
 def bot_loop():
     offset = 0
@@ -327,11 +331,7 @@ def bot_loop():
                     continue
 
                 # -------- دستورات ادمین --------
-# ================== روت سلامت برای جلوگیری از خواب ==================
-@app.route('/')
-@app.route('/health')
-def health_check():
-    return "Bot is alive and running!", 200
+
                 if cid == ADMIN_ID:
                     if txt == "/users":
                         rows = get_all_users()
