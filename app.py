@@ -327,6 +327,11 @@ def bot_loop():
                     continue
 
                 # -------- دستورات ادمین --------
+# ================== روت سلامت برای جلوگیری از خواب ==================
+@app.route('/')
+@app.route('/health')
+def health_check():
+    return "Bot is alive and running!", 200
                 if cid == ADMIN_ID:
                     if txt == "/users":
                         rows = get_all_users()
@@ -412,8 +417,3 @@ if __name__ == "__main__":
     threading.Thread(target=bot_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-# ================== روت سلامت برای جلوگیری از خواب ==================
-@app.route('/')
-@app.route('/health')
-def health_check():
-    return "Bot is alive and running!", 200
