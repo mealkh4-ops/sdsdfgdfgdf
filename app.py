@@ -412,3 +412,8 @@ if __name__ == "__main__":
     threading.Thread(target=bot_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+# ================== روت سلامت برای جلوگیری از خواب ==================
+@app.route('/')
+@app.route('/health')
+def health_check():
+    return "Bot is alive and running!", 200
