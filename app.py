@@ -27,8 +27,7 @@ app = Flask(__name__)
 profanity_filter = ProfanityFilter(WordList.persian_default())
 
 # ================== State ==================
-# وضعیت مکالمه هر کاربر در حافظه نگه داشته می‌شود (می‌توانید در DB هم ذخیره کنید)
-USER_STATE = {}  # chat_id -> state string
+USER_STATE = {}
 
 STATE_MAIN = "main"
 STATE_REELS = "reels_wait"
@@ -70,6 +69,15 @@ SUBSCRIBE_MENU = {
     "resize_keyboard": True,
     "one_time_keyboard": False
 }
+
+# ================== دکمه‌ها ==================
+BTN_REELS = "📥 دانلود ریلز اینستاگرام"
+BTN_PRICES = "💰 نرخ دلار و طلا"
+BTN_TRANSLATE = "🌐 ترجمه"
+BTN_SUBSCRIBE = "🛒 خرید اشتراک"
+BTN_BACK = "🔙 بازگشت به منو"
+BTN_FA2EN = "🇮🇷 → 🇬🇧 ترجمه فارسی به انگلیسی"
+BTN_EN2FA = "🇬🇧 → 🇮🇷 ترجمه انگلیسی به فارسی"
 
 # ================== روت سلامت ==================
 @app.route('/')
@@ -115,12 +123,18 @@ def init_db():
                  reset_at TIMESTAMP WITH TIME ZONE,
                  FOREIGN KEY (chat_id) REFERENCES users(chat_id)
                  )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS admin_broadcasts (
+                 id SERIAL PRIMARY KEY,
+                 chat_id BIGINT,
+                 message_id BIGINT,
+                 kind TEXT,
+                 sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                 )''')
     conn.commit()
     c.close()
     conn.close()
 
 def save_user(chat_id, first_name, username):
-    """ذخیره کاربر و برگرداندن True اگر جدید بود"""
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT 1 FROM users WHERE chat_id=%s', (chat_id,))
@@ -238,6 +252,103 @@ def log_message(chat_id, text):
     conn = get_db_connection(); c = conn.cursor()
     c.execute('INSERT INTO messages_log (chat_id, message_text) VALUES (%s, %s)', (chat_id, text))
     conn.commit(); c.close(); conn.close()
+
+# ================== توابع ادمین ==================
+def save_admin_broadcast(chat_id, message_id, kind):
+    conn = get_db_connection(); c = conn.cursor()
+    c.execute('''INSERT INTO admin_broadcasts (chat_id, message_id, kind)
+                 VALUES (%s, %s, %s)''', (chat_id, message_id, kind))
+    conn.commit(); c.close(); conn.close()
+
+def get_admin_broadcasts(kind=None, chat_id=None):
+    conn = get_db_connection(); c = conn.cursor()
+    if kind == "all":
+        c.execute('''SELECT chat_id, message_id FROM admin_broadcasts
+                     WHERE kind='all' ORDER BY sent_at DESC''')
+    elif chat_id is not None:
+        c.execute('''SELECT chat_id, message_id FROM admin_broadcasts
+                     WHERE chat_id=%s ORDER BY sent_at DESC''', (chat_id,))
+    else:
+        c.execute('''SELECT chat_id, message_id FROM admin_broadcasts ORDER BY sent_at DESC''')
+    rows = c.fetchall(); c.close(); conn.close()
+    return rows
+
+def delete_admin_broadcasts(kind=None, chat_id=None):
+    targets = get_admin_broadcasts(kind=kind, chat_id=chat_id)
+    deleted, failed = 0, 0
+    for cid, mid in targets:
+        res = api("deleteMessage", chat_id=cid, message_id=mid)
+        if res.get("ok"):
+            deleted += 1
+        else:
+            failed += 1
+    conn = get_db_connection(); c = conn.cursor()
+    if kind == "all":
+        c.execute("DELETE FROM admin_broadcasts WHERE kind='all'")
+    elif chat_id is not None:
+        c.execute("DELETE FROM admin_broadcasts WHERE chat_id=%s", (chat_id,))
+    conn.commit(); c.close(); conn.close()
+    return deleted, failed
+
+def broadcast_to_all(text):
+    users = get_all_users()
+    sent, failed = 0, 0
+    for r in users:
+        cid = r[0]
+        if r[3]:
+            continue
+        res = send(cid, text)
+        if res.get("ok"):
+            mid = res.get("result", {}).get("message_id")
+            if mid:
+                save_admin_broadcast(cid, mid, "all")
+            sent += 1
+        else:
+            failed += 1
+        time.sleep(0.05)
+    return sent, failed
+
+def send_to_one(chat_id, text):
+    res = send(chat_id, text)
+    if res.get("ok"):
+        mid = res.get("result", {}).get("message_id")
+        if mid:
+            save_admin_broadcast(chat_id, mid, "single")
+        return True
+    return False
+
+def factor_last_24h(chat_id):
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    conn = get_db_connection(); c = conn.cursor()
+    c.execute('''SELECT url, action_time FROM user_activity
+                 WHERE chat_id=%s AND action_time >= %s
+                 ORDER BY action_time DESC''', (chat_id, since))
+    downloads = c.fetchall()
+    c.execute('''SELECT message_text, sent_at FROM messages_log
+                 WHERE chat_id=%s AND sent_at >= %s
+                 ORDER BY sent_at DESC''', (chat_id, since))
+    messages = c.fetchall()
+    c.close(); conn.close()
+
+    tehran_tz = timezone(timedelta(hours=3, minutes=30))
+    def fmt(dt):
+        return dt.astimezone(tehran_tz).strftime("%Y-%m-%d %H:%M")
+
+    lines = [f"📊 فعالیت ۲۴ ساعت اخیر کاربر {chat_id}", "───────────────"]
+    lines.append(f"📥 دانلودها ({len(downloads)}):")
+    if downloads:
+        for url, t in downloads:
+            lines.append(f"• {fmt(t)} — {url[:60]}")
+    else:
+        lines.append("• بدون دانلود")
+    lines.append("───────────────")
+    lines.append(f"✍️ پیام‌های ثبت‌شده ({len(messages)}):")
+    if messages:
+        for txt, t in messages:
+            lines.append(f"• {fmt(t)} — {txt[:60]}")
+    else:
+        lines.append("• بدون پیام")
+    return "\n".join(lines)
 
 # ================== API سروش ==================
 def api(method, **params):
@@ -387,23 +498,14 @@ def download_and_send_reel(chat_id, url, reply_to=None):
         send(chat_id, f"⚠️ خطا: {str(e)[:100]}", reply_to, MAIN_MENU)
         return False
 
-# ================== هندلر اصلی پیام ==================
-BTN_REELS = "📥 دانلود ریلز اینستاگرام"
-BTN_PRICES = "💰 نرخ دلار و طلا"
-BTN_TRANSLATE = "🌐 ترجمه"
-BTN_SUBSCRIBE = "🛒 خرید اشتراک"
-BTN_BACK = "🔙 بازگشت به منو"
-BTN_FA2EN = "🇮🇷 → 🇬🇧 ترجمه فارسی به انگلیسی"
-BTN_EN2FA = "🇬🇧 → 🇮🇷 ترجمه انگلیسی به فارسی"
-
+# ================== هندلر اصلی ==================
 def handle_message(cid, txt, msg_id, chat_meta):
-    # ثبت کاربر و ساخت پیام خوش‌آمد اگر جدید بود
     is_new = save_user(cid, chat_meta.get("first_name", ""), chat_meta.get("username", ""))
 
     if is_user_blocked(cid):
         return
 
-    # -------- دستورات ادمین (اولویت بالا) --------
+    # -------- دستورات ادمین --------
     if cid == ADMIN_ID:
         if txt == "/users":
             rows = get_all_users()
@@ -417,6 +519,7 @@ def handle_message(cid, txt, msg_id, chat_meta):
                     report += f"{blocked} {r[1]} | ID: {r[0]} | {lic_status}\n"
                 send(cid, report, msg_id)
             return
+
         if txt.startswith("/activate "):
             try:
                 target = int(txt.split(" ")[1])
@@ -425,12 +528,70 @@ def handle_message(cid, txt, msg_id, chat_meta):
             except Exception:
                 send(cid, "فرمت: /activate 123456789", msg_id)
             return
+
         if txt.startswith("/block "):
             try:
                 block_user(int(txt.split(" ")[1]))
                 send(cid, "کاربر مسدود شد.", msg_id)
             except Exception:
                 send(cid, "فرمت: /block 123456789", msg_id)
+            return
+
+        # /all + متن
+        if txt.startswith("/all"):
+            body = txt[len("/all"):].strip()
+            if not body:
+                send(cid, "فرمت: /all متن پیام", msg_id); return
+            s, f = broadcast_to_all(body)
+            send(cid, f"📤 ارسال شد به {s} کاربر. ناموفق: {f}", msg_id)
+            return
+
+        # /send + chatid + متن
+        if txt.startswith("/send"):
+            parts = txt.split(maxsplit=2)
+            if len(parts) < 3:
+                send(cid, "فرمت: /send chatid متن پیام", msg_id); return
+            try:
+                target = int(parts[1])
+            except ValueError:
+                send(cid, "chatid باید عدد باشد.", msg_id); return
+            ok = send_to_one(target, parts[2])
+            send(cid, "✅ ارسال شد." if ok else "⚠️ ارسال ناموفق.", msg_id)
+            return
+
+        # /delete all
+        if txt.strip() == "/delete all":
+            d, f = delete_admin_broadcasts(kind="all")
+            send(cid, f"🗑 حذف‌شده: {d} | ناموفق: {f}", msg_id)
+            return
+
+        # /delete + chatid
+        if txt.startswith("/delete"):
+            parts = txt.split()
+            if len(parts) < 2:
+                send(cid, "فرمت: /delete all  یا  /delete chatid", msg_id); return
+            if parts[1] == "all":
+                d, f = delete_admin_broadcasts(kind="all")
+                send(cid, f"🗑 حذف‌شده: {d} | ناموفق: {f}", msg_id)
+            else:
+                try:
+                    target = int(parts[1])
+                except ValueError:
+                    send(cid, "chatid باید عدد باشد.", msg_id); return
+                d, f = delete_admin_broadcasts(chat_id=target)
+                send(cid, f"🗑 حذف‌شده برای {target}: {d} | ناموفق: {f}", msg_id)
+            return
+
+        # /factor + chatid
+        if txt.startswith("/factor"):
+            parts = txt.split()
+            if len(parts) < 2:
+                send(cid, "فرمت: /factor chatid", msg_id); return
+            try:
+                target = int(parts[1])
+            except ValueError:
+                send(cid, "chatid باید عدد باشد.", msg_id); return
+            send(cid, factor_last_24h(target), msg_id)
             return
 
     # -------- فیلتر الفاظ --------
@@ -469,13 +630,13 @@ def handle_message(cid, txt, msg_id, chat_meta):
         send(cid, welcome, msg_id, MAIN_MENU)
         return
 
-    # -------- دکمه بازگشت به منو --------
+    # -------- دکمه بازگشت --------
     if txt == BTN_BACK:
         USER_STATE[cid] = STATE_MAIN
         send(cid, "🏠 به منوی اصلی بازگشتید.", msg_id, MAIN_MENU)
         return
 
-    # -------- منوی اصلی: انتخاب گزینه‌ها --------
+    # -------- منوی اصلی --------
     if txt == BTN_REELS:
         USER_STATE[cid] = STATE_REELS
         send(cid,
@@ -512,11 +673,10 @@ def handle_message(cid, txt, msg_id, chat_meta):
             USER_STATE[cid] = STATE_TRANSLATE_EN2FA
             send(cid, "✍️ متن انگلیسی خود را ارسال کنید تا به فارسی ترجمه شود.", msg_id, BACK_MENU)
             return
-        # ورودی نامعتبر
         send(cid, "⚠️ لطفاً یکی از گزینه‌های منوی ترجمه را انتخاب کنید.", msg_id, TRANSLATE_MENU)
         return
 
-    # -------- در حالت دریافت متن برای ترجمه --------
+    # -------- دریافت متن برای ترجمه --------
     if state == STATE_TRANSLATE_FA2EN:
         result = translate(txt, from_lang="fa", to_lang="en")
         USER_STATE[cid] = STATE_TRANSLATE_MENU
@@ -530,7 +690,7 @@ def handle_message(cid, txt, msg_id, chat_meta):
         send(cid, f"🌐 ترجمه:\n\n{result}", msg_id, TRANSLATE_MENU)
         return
 
-    # -------- در حالت دریافت لینک ریلز --------
+    # -------- دریافت لینک ریلز --------
     if state == STATE_REELS:
         if not is_instagram_reel(txt):
             send(cid,
@@ -568,21 +728,13 @@ def handle_message(cid, txt, msg_id, chat_meta):
     # -------- حالت خرید اشتراک --------
     if state == STATE_SUBSCRIBE:
         send(cid,
-             "برای خرید اشتراک لطفاً به @akh_133 پیام دهید.\n"
-             "یا از منوی زیر بازگشت بزنید.",
+             "⚠️ لطفاً فقط از منوی زیر استفاده کنید یا بازگشت بزنید.",
              msg_id, SUBSCRIBE_MENU)
         return
 
-    # -------- پیام آزاد در حالت main --------
-    # اگر متن انگلیسی بود ترجمه کن (رفتار قبلی)
-    if re.search(r"[A-Za-z]", txt):
-        log_message(cid, txt)
-        send(cid, translate(txt, from_lang="en", to_lang="fa"), msg_id, MAIN_MENU)
-        return
-
-    # پیام نامشخص
+    # -------- پیام خارج از منو --------
     send(cid,
-         "❓ متوجه نشدم. لطفاً از منوی زیر یک گزینه انتخاب کنید.",
+         "⚠️ لطفاً یکی از گزینه‌های منو را انتخاب کنید.",
          msg_id, MAIN_MENU)
 
 # ================== حلقه اصلی ==================
