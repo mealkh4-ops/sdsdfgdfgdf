@@ -17,15 +17,59 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "70956629:jvLERRmmQGU4FxpB4G3pl12fPynPEl
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "18351322"))
 API_BASE = f"https://api.splus.ir/bot{BOT_TOKEN}"
 
-# FastSaver API
 FASTSAVER_API_KEY = os.environ.get("FASTSAVER_API_KEY", "fs_sk_8h1x6d2s5o4o2s7k7m1u6t3h2q4i")
 FASTSAVER_ENDPOINT = "https://api.fastsaver.io/v1/fetch"
 
-FREE_LIMIT = 5  # تعداد لینک رایگان در ۲۴ ساعت
+FREE_LIMIT = 5
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 app = Flask(__name__)
 profanity_filter = ProfanityFilter(WordList.persian_default())
+
+# ================== State ==================
+# وضعیت مکالمه هر کاربر در حافظه نگه داشته می‌شود (می‌توانید در DB هم ذخیره کنید)
+USER_STATE = {}  # chat_id -> state string
+
+STATE_MAIN = "main"
+STATE_REELS = "reels_wait"
+STATE_TRANSLATE_MENU = "translate_menu"
+STATE_TRANSLATE_FA2EN = "translate_fa2en_wait"
+STATE_TRANSLATE_EN2FA = "translate_en2fa_wait"
+STATE_SUBSCRIBE = "subscribe"
+
+# ================== کیبوردها ==================
+MAIN_MENU = {
+    "keyboard": [
+        [{"text": "📥 دانلود ریلز اینستاگرام"}],
+        [{"text": "💰 نرخ دلار و طلا"}],
+        [{"text": "🌐 ترجمه"}],
+        [{"text": "🛒 خرید اشتراک"}]
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": False
+}
+
+BACK_MENU = {
+    "keyboard": [[{"text": "🔙 بازگشت به منو"}]],
+    "resize_keyboard": True,
+    "one_time_keyboard": False
+}
+
+TRANSLATE_MENU = {
+    "keyboard": [
+        [{"text": "🇮🇷 → 🇬🇧 ترجمه فارسی به انگلیسی"}],
+        [{"text": "🇬🇧 → 🇮🇷 ترجمه انگلیسی به فارسی"}],
+        [{"text": "🔙 بازگشت به منو"}]
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": False
+}
+
+SUBSCRIBE_MENU = {
+    "keyboard": [[{"text": "🔙 بازگشت به منو"}]],
+    "resize_keyboard": True,
+    "one_time_keyboard": False
+}
 
 # ================== روت سلامت ==================
 @app.route('/')
@@ -34,7 +78,7 @@ profanity_filter = ProfanityFilter(WordList.persian_default())
 def health_check():
     return "Bot is alive and running!", 200
 
-# ================== دیتابیس (PostgreSQL) ==================
+# ================== دیتابیس ==================
 def get_db_connection():
     if not DATABASE_URL:
         raise Exception("DATABASE_URL is not set!")
@@ -43,8 +87,6 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
-    
-    # جدول کاربران
     c.execute('''CREATE TABLE IF NOT EXISTS users (
                  chat_id BIGINT PRIMARY KEY,
                  first_name TEXT,
@@ -53,8 +95,6 @@ def init_db():
                  license_key TEXT,
                  license_expires_at TIMESTAMP WITH TIME ZONE
                  )''')
-    
-    # جدول تاریخچه دانلودها
     c.execute('''CREATE TABLE IF NOT EXISTS user_activity (
                  id SERIAL PRIMARY KEY,
                  chat_id BIGINT,
@@ -62,8 +102,6 @@ def init_db():
                  action_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                  FOREIGN KEY (chat_id) REFERENCES users(chat_id)
                  )''')
-                 
-    # جدول پیام‌های انگلیسی
     c.execute('''CREATE TABLE IF NOT EXISTS messages_log (
                  id SERIAL PRIMARY KEY,
                  chat_id BIGINT,
@@ -71,22 +109,22 @@ def init_db():
                  sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                  FOREIGN KEY (chat_id) REFERENCES users(chat_id)
                  )''')
-    
-    # جدول محدودیت روزانه (اختیاری برای شمارش سریع‌تر)
     c.execute('''CREATE TABLE IF NOT EXISTS daily_limits (
                  chat_id BIGINT PRIMARY KEY,
                  count INTEGER DEFAULT 0,
                  reset_at TIMESTAMP WITH TIME ZONE,
                  FOREIGN KEY (chat_id) REFERENCES users(chat_id)
                  )''')
-                 
     conn.commit()
     c.close()
     conn.close()
 
 def save_user(chat_id, first_name, username):
+    """ذخیره کاربر و برگرداندن True اگر جدید بود"""
     conn = get_db_connection()
     c = conn.cursor()
+    c.execute('SELECT 1 FROM users WHERE chat_id=%s', (chat_id,))
+    exists = c.fetchone() is not None
     c.execute('''INSERT INTO users (chat_id, first_name, username)
                  VALUES (%s, %s, %s)
                  ON CONFLICT(chat_id) DO UPDATE SET
@@ -95,6 +133,7 @@ def save_user(chat_id, first_name, username):
     conn.commit()
     c.close()
     conn.close()
+    return not exists
 
 def is_user_blocked(chat_id):
     conn = get_db_connection()
@@ -158,16 +197,12 @@ def get_free_remaining(chat_id):
     c.execute('SELECT count, reset_at FROM daily_limits WHERE chat_id=%s', (chat_id,))
     row = c.fetchone()
     if not row:
-        c.close()
-        conn.close()
+        c.close(); conn.close()
         return FREE_LIMIT
     count, reset_at = row
+    c.close(); conn.close()
     if now >= reset_at:
-        c.close()
-        conn.close()
         return FREE_LIMIT
-    c.close()
-    conn.close()
     return max(0, FREE_LIMIT - count)
 
 def increment_free_usage(chat_id):
@@ -191,25 +226,18 @@ def increment_free_usage(chat_id):
         c.execute('INSERT INTO daily_limits (chat_id, count, reset_at) VALUES (%s, 1, %s)',
                   (chat_id, reset))
     conn.commit()
-    c.close()
-    conn.close()
+    c.close(); conn.close()
 
-# ================== توابع لاگ‌گیری ==================
+# ================== لاگ ==================
 def log_download(chat_id, url):
-    conn = get_db_connection()
-    c = conn.cursor()
+    conn = get_db_connection(); c = conn.cursor()
     c.execute('INSERT INTO user_activity (chat_id, url) VALUES (%s, %s)', (chat_id, url))
-    conn.commit()
-    c.close()
-    conn.close()
+    conn.commit(); c.close(); conn.close()
 
 def log_message(chat_id, text):
-    conn = get_db_connection()
-    c = conn.cursor()
+    conn = get_db_connection(); c = conn.cursor()
     c.execute('INSERT INTO messages_log (chat_id, message_text) VALUES (%s, %s)', (chat_id, text))
-    conn.commit()
-    c.close()
-    conn.close()
+    conn.commit(); c.close(); conn.close()
 
 # ================== API سروش ==================
 def api(method, **params):
@@ -220,10 +248,12 @@ def api(method, **params):
         print(e, flush=True)
         return {"ok": False}
 
-def send(chat_id, text, reply_to=None):
+def send(chat_id, text, reply_to=None, keyboard=None):
     p = {"chat_id": chat_id, "text": text}
     if reply_to:
         p["reply_to_message_id"] = reply_to
+    if keyboard:
+        p["reply_markup"] = keyboard
     return api("sendMessage", **p)
 
 def send_video(chat_id, video_path, caption=None, reply_to=None):
@@ -241,11 +271,12 @@ def send_video(chat_id, video_path, caption=None, reply_to=None):
         return {"ok": False}
 
 # ================== ترجمه ==================
-def translate(text, target="fa"):
+def translate(text, from_lang="en", to_lang="fa"):
     services = ["google", "bing", "alibaba", "baidu", "youdao"]
     for service in services:
         try:
-            result = ts.translate_text(text, translator=service, from_language="en", to_language="fa")
+            result = ts.translate_text(text, translator=service,
+                                       from_language=from_lang, to_language=to_lang)
             if result:
                 if profanity_filter.contains_profanity(result):
                     continue
@@ -261,15 +292,28 @@ def iran_datetime_str():
     jnow = jdatetime.datetime.fromgregorian(datetime=now)
     return jnow.strftime("%A %d %B %Y  -  %H:%M:%S")
 
+def greeting_time():
+    tehran_tz = timezone(timedelta(hours=3, minutes=30))
+    h = datetime.now(tehran_tz).hour
+    if 5 <= h < 12:
+        return "صبح بخیر"
+    if 12 <= h < 17:
+        return "ظهر بخیر"
+    if 17 <= h < 21:
+        return "عصر بخیر"
+    return "شب بخیر"
+
 # ================== قیمت ==================
 def get_prices():
     try:
-        r = requests.get("https://call1.tgju.org/ajax.json", timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get("https://call1.tgju.org/ajax.json", timeout=15,
+                         headers={"User-Agent": "Mozilla/5.0"})
         cur = r.json().get("current", {})
         def find(*keys):
             for k in keys:
                 p = cur.get(k, {}).get("p", "")
-                if p and p != "0": return p
+                if p and p != "0":
+                    return p
             return "—"
         return (
             "💰 قیمت‌های لحظه‌ای\n───────────────\n"
@@ -283,7 +327,7 @@ def get_prices():
     except Exception as e:
         return f"⚠️ خطا: {e}"
 
-# ================== ریلز با FastSaver ==================
+# ================== ریلز ==================
 def is_instagram_reel(text):
     return bool(re.search(r"instagram\.com/(reel|p)/", text))
 
@@ -299,24 +343,24 @@ def download_and_send_reel(chat_id, url, reply_to=None):
 
         if not data.get("ok"):
             error = data.get("detail", data.get("error", "خطای ناشناخته"))
-            send(chat_id, f"⚠️ {error}", reply_to)
+            send(chat_id, f"⚠️ {error}", reply_to, MAIN_MENU)
             return False
 
         media_type = data.get("type", "")
         if media_type == "album":
             items = data.get("items", [])
             if not items:
-                send(chat_id, "⚠️ محتوایی پیدا نشد.", reply_to)
+                send(chat_id, "⚠️ محتوایی پیدا نشد.", reply_to, MAIN_MENU)
                 return False
             download_url = items[0].get("download_url")
         elif media_type in ("video", "image"):
             download_url = data.get("download_url")
         else:
-            send(chat_id, "⚠️ نوع محتوا پشتیبانی نمی‌شود.", reply_to)
+            send(chat_id, "⚠️ نوع محتوا پشتیبانی نمی‌شود.", reply_to, MAIN_MENU)
             return False
 
         if not download_url:
-            send(chat_id, "⚠️ لینک دانلود دریافت نشد.", reply_to)
+            send(chat_id, "⚠️ لینک دانلود دریافت نشد.", reply_to, MAIN_MENU)
             return False
 
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
@@ -332,16 +376,214 @@ def download_and_send_reel(chat_id, url, reply_to=None):
         return result.get("ok", False)
 
     except requests.exceptions.Timeout:
-        send(chat_id, "⚠️ زمان درخواست به پایان رسید.", reply_to)
+        send(chat_id, "⚠️ زمان درخواست به پایان رسید.", reply_to, MAIN_MENU)
         return False
     except requests.exceptions.RequestException as e:
         print(f"[FASTSAVER NETWORK ERROR] {e}", flush=True)
-        send(chat_id, "⚠️ خطا در ارتباط با سرویس دانلود.", reply_to)
+        send(chat_id, "⚠️ خطا در ارتباط با سرویس دانلود.", reply_to, MAIN_MENU)
         return False
     except Exception as e:
         print(f"[REEL ERROR] {e}", flush=True)
-        send(chat_id, f"⚠️ خطا: {str(e)[:100]}", reply_to)
+        send(chat_id, f"⚠️ خطا: {str(e)[:100]}", reply_to, MAIN_MENU)
         return False
+
+# ================== هندلر اصلی پیام ==================
+BTN_REELS = "📥 دانلود ریلز اینستاگرام"
+BTN_PRICES = "💰 نرخ دلار و طلا"
+BTN_TRANSLATE = "🌐 ترجمه"
+BTN_SUBSCRIBE = "🛒 خرید اشتراک"
+BTN_BACK = "🔙 بازگشت به منو"
+BTN_FA2EN = "🇮🇷 → 🇬🇧 ترجمه فارسی به انگلیسی"
+BTN_EN2FA = "🇬🇧 → 🇮🇷 ترجمه انگلیسی به فارسی"
+
+def handle_message(cid, txt, msg_id, chat_meta):
+    # ثبت کاربر و ساخت پیام خوش‌آمد اگر جدید بود
+    is_new = save_user(cid, chat_meta.get("first_name", ""), chat_meta.get("username", ""))
+
+    if is_user_blocked(cid):
+        return
+
+    # -------- دستورات ادمین (اولویت بالا) --------
+    if cid == ADMIN_ID:
+        if txt == "/users":
+            rows = get_all_users()
+            if not rows:
+                send(cid, "هیچ کاربری ثبت نشده.", msg_id)
+            else:
+                report = "👥 لیست کاربران:\n───────────────\n"
+                for r in rows[:30]:
+                    blocked = "🚫" if r[3] else "✅"
+                    lic_status = "💎 فعال" if (r[4] and r[5] and r[5] > datetime.now(timezone.utc)) else "🆓 رایگان"
+                    report += f"{blocked} {r[1]} | ID: {r[0]} | {lic_status}\n"
+                send(cid, report, msg_id)
+            return
+        if txt.startswith("/activate "):
+            try:
+                target = int(txt.split(" ")[1])
+                key = activate_license(target, 30)
+                send(cid, f"✅ لایسنس ۳۰ روزه برای {target} فعال شد.\nکلید: {key}", msg_id)
+            except Exception:
+                send(cid, "فرمت: /activate 123456789", msg_id)
+            return
+        if txt.startswith("/block "):
+            try:
+                block_user(int(txt.split(" ")[1]))
+                send(cid, "کاربر مسدود شد.", msg_id)
+            except Exception:
+                send(cid, "فرمت: /block 123456789", msg_id)
+            return
+
+    # -------- فیلتر الفاظ --------
+    if profanity_filter.contains_profanity(txt):
+        send(cid, "⚠️ خطا: پیام حاوی الفاظ نامناسب است.", msg_id, MAIN_MENU)
+        return
+
+    state = USER_STATE.get(cid, STATE_MAIN)
+
+    # -------- /start --------
+    if txt.startswith("/start"):
+        USER_STATE[cid] = STATE_MAIN
+        licensed = is_license_active(cid)
+        if licensed:
+            lic = get_user_license(cid)
+            lic_msg = f"✅ اشتراک فعال تا {lic[1][:10]}"
+        else:
+            remaining = get_free_remaining(cid)
+            lic_msg = f"🆓 رایگان - سهمیه باقی‌مانده: {remaining} از {FREE_LIMIT}"
+
+        if is_new:
+            name = chat_meta.get("first_name", "دوست عزیز")
+            welcome = (
+                f"{greeting_time()} {name} عزیز 🌟\n"
+                f"به ربات ما خوش آمدید!\n"
+                f"🕐 {iran_datetime_str()}\n───────────────\n"
+                f"وضعیت اشتراک: {lic_msg}\n\n"
+                "از منوی زیر یک گزینه انتخاب کنید:"
+            )
+        else:
+            welcome = (
+                f"سلام دوباره {chat_meta.get('first_name', 'دوست عزیز')} 👋\n"
+                f"وضعیت اشتراک: {lic_msg}\n\n"
+                "از منوی زیر یک گزینه انتخاب کنید:"
+            )
+        send(cid, welcome, msg_id, MAIN_MENU)
+        return
+
+    # -------- دکمه بازگشت به منو --------
+    if txt == BTN_BACK:
+        USER_STATE[cid] = STATE_MAIN
+        send(cid, "🏠 به منوی اصلی بازگشتید.", msg_id, MAIN_MENU)
+        return
+
+    # -------- منوی اصلی: انتخاب گزینه‌ها --------
+    if txt == BTN_REELS:
+        USER_STATE[cid] = STATE_REELS
+        send(cid,
+             "📥 لطفاً لینک ریلز اینستاگرام را ارسال کنید.\n"
+             "⚠️ فقط لینک ریلز پذیرفته می‌شود.",
+             msg_id, BACK_MENU)
+        return
+
+    if txt == BTN_PRICES:
+        USER_STATE[cid] = STATE_MAIN
+        send(cid, get_prices(), msg_id, MAIN_MENU)
+        return
+
+    if txt == BTN_TRANSLATE:
+        USER_STATE[cid] = STATE_TRANSLATE_MENU
+        send(cid, "🌐 لطفاً نوع ترجمه را انتخاب کنید:", msg_id, TRANSLATE_MENU)
+        return
+
+    if txt == BTN_SUBSCRIBE:
+        USER_STATE[cid] = STATE_SUBSCRIBE
+        send(cid,
+             "🛒 برای خرید اشتراک ماهانه لطفاً به آیدی زیر پیام دهید:\n\n"
+             "👉 @akh_133",
+             msg_id, SUBSCRIBE_MENU)
+        return
+
+    # -------- زیرمنوی ترجمه --------
+    if state == STATE_TRANSLATE_MENU:
+        if txt == BTN_FA2EN:
+            USER_STATE[cid] = STATE_TRANSLATE_FA2EN
+            send(cid, "✍️ متن فارسی خود را ارسال کنید تا به انگلیسی ترجمه شود.", msg_id, BACK_MENU)
+            return
+        if txt == BTN_EN2FA:
+            USER_STATE[cid] = STATE_TRANSLATE_EN2FA
+            send(cid, "✍️ متن انگلیسی خود را ارسال کنید تا به فارسی ترجمه شود.", msg_id, BACK_MENU)
+            return
+        # ورودی نامعتبر
+        send(cid, "⚠️ لطفاً یکی از گزینه‌های منوی ترجمه را انتخاب کنید.", msg_id, TRANSLATE_MENU)
+        return
+
+    # -------- در حالت دریافت متن برای ترجمه --------
+    if state == STATE_TRANSLATE_FA2EN:
+        result = translate(txt, from_lang="fa", to_lang="en")
+        USER_STATE[cid] = STATE_TRANSLATE_MENU
+        send(cid, f"🌐 ترجمه:\n\n{result}", msg_id, TRANSLATE_MENU)
+        return
+
+    if state == STATE_TRANSLATE_EN2FA:
+        log_message(cid, txt)
+        result = translate(txt, from_lang="en", to_lang="fa")
+        USER_STATE[cid] = STATE_TRANSLATE_MENU
+        send(cid, f"🌐 ترجمه:\n\n{result}", msg_id, TRANSLATE_MENU)
+        return
+
+    # -------- در حالت دریافت لینک ریلز --------
+    if state == STATE_REELS:
+        if not is_instagram_reel(txt):
+            send(cid,
+                 "⚠️ خطا: فقط لینک ریلز اینستاگرام پذیرفته می‌شود.\n"
+                 "مثال: https://www.instagram.com/reel/XXXXX/",
+                 msg_id, BACK_MENU)
+            return
+
+        licensed = is_license_active(cid)
+        if not licensed:
+            remaining = get_free_remaining(cid)
+            if remaining <= 0:
+                send(cid,
+                     "⛔ محدودیت ۲۴ ساعته (۵ لینک رایگان) تمام شد.\n"
+                     "برای خرید اشتراک به منوی «خرید اشتراک» مراجعه کنید.",
+                     msg_id, MAIN_MENU)
+                USER_STATE[cid] = STATE_MAIN
+                return
+
+        success = download_and_send_reel(cid, txt, msg_id)
+        if success:
+            log_download(cid, txt)
+            if not licensed:
+                increment_free_usage(cid)
+                remaining = get_free_remaining(cid)
+                send(cid,
+                     f"✅ ارسال موفق.\n"
+                     f"🔋 سهمیه رایگان باقی‌مانده: {remaining} از {FREE_LIMIT}",
+                     msg_id, MAIN_MENU)
+            else:
+                send(cid, "✅ ارسال موفق.", msg_id, MAIN_MENU)
+        USER_STATE[cid] = STATE_MAIN
+        return
+
+    # -------- حالت خرید اشتراک --------
+    if state == STATE_SUBSCRIBE:
+        send(cid,
+             "برای خرید اشتراک لطفاً به @akh_133 پیام دهید.\n"
+             "یا از منوی زیر بازگشت بزنید.",
+             msg_id, SUBSCRIBE_MENU)
+        return
+
+    # -------- پیام آزاد در حالت main --------
+    # اگر متن انگلیسی بود ترجمه کن (رفتار قبلی)
+    if re.search(r"[A-Za-z]", txt):
+        log_message(cid, txt)
+        send(cid, translate(txt, from_lang="en", to_lang="fa"), msg_id, MAIN_MENU)
+        return
+
+    # پیام نامشخص
+    send(cid,
+         "❓ متوجه نشدم. لطفاً از منوی زیر یک گزینه انتخاب کنید.",
+         msg_id, MAIN_MENU)
 
 # ================== حلقه اصلی ==================
 def bot_loop():
@@ -349,7 +591,8 @@ def bot_loop():
     print("BOT STARTED", flush=True)
     while True:
         try:
-            res = api("getUpdates", offset=offset, timeout=30, limit=100, allowed_updates=["message"])
+            res = api("getUpdates", offset=offset, timeout=30, limit=100,
+                      allowed_updates=["message"])
             if not res.get("ok"):
                 time.sleep(3)
                 continue
@@ -359,107 +602,25 @@ def bot_loop():
                 m = u.get("message")
                 if not m:
                     continue
-
                 txt = (m.get("text") or "").strip()
                 cid = m["chat"]["id"]
-
-                print(f"[CHAT ID] {cid} | Name: {m['chat'].get('first_name', '')} | Text: {txt}", flush=True)
-
                 if not txt:
                     continue
-
-                chat = m.get("chat", {})
-                save_user(cid, chat.get("first_name", ""), chat.get("username", ""))
-
-                if is_user_blocked(cid):
-                    continue
-
-                # -------- دستورات ادمین --------
-                if cid == ADMIN_ID:
-                    if txt == "/users":
-                        rows = get_all_users()
-                        if not rows:
-                            send(cid, "هیچ کاربری ثبت نشده.", m["message_id"])
-                        else:
-                            report = "👥 لیست کاربران:\n───────────────\n"
-                            for r in rows[:30]:
-                                blocked = "🚫" if r[3] else "✅"
-                                lic_status = "💎 فعال" if (r[4] and r[5] and r[5] > datetime.now(timezone.utc)) else "🆓 رایگان"
-                                report += f"{blocked} {r[1]} | ID: {r[0]} | {lic_status}\n"
-                            send(cid, report, m["message_id"])
-                        continue
-                    if txt.startswith("/activate "):
-                        try:
-                            target = int(txt.split(" ")[1])
-                            key = activate_license(target, 30)
-                            send(cid, f"✅ لایسنس ۳۰ روزه برای {target} فعال شد.\nکلید: {key}", m["message_id"])
-                        except Exception:
-                            send(cid, "فرمت: /activate 123456789", m["message_id"])
-                        continue
-                    if txt.startswith("/block "):
-                        try:
-                            block_user(int(txt.split(" ")[1]))
-                            send(cid, "کاربر مسدود شد.", m["message_id"])
-                        except Exception:
-                            send(cid, "فرمت: /block 123456789", m["message_id"])
-                        continue
-
-                # -------- فیلتر الفاظ --------
-                if profanity_filter.contains_profanity(txt):
-                    send(cid, "⚠️ خطا: پیام حاوی الفاظ نامناسب است.", m["message_id"])
-                    continue
-
-                # -------- ریلز --------
-                if is_instagram_reel(txt):
-                    licensed = is_license_active(cid)
-                    if not licensed:
-                        remaining = get_free_remaining(cid)
-                        if remaining <= 0:
-                            send(cid,
-                                 "⛔ محدودیت ۲۴ ساعته (۵ لینک رایگان) تمام شد.\n"
-                                 "برای خرید اشتراک ماهانه به ادمین پیام دهید.",
-                                 m["message_id"])
-                            continue
-
-                    success = download_and_send_reel(cid, txt, m["message_id"])
-                    if success:
-                        log_download(cid, txt)  # ثبت لینک دانلود شده
-                        if not licensed:
-                            increment_free_usage(cid)
-                            remaining = get_free_remaining(cid)
-                            send(cid,
-                                 f"✅ ارسال موفق.\n"
-                                 f"🔋 سهمیه رایگان باقی‌مانده: {remaining} از {FREE_LIMIT}",
-                                 m["message_id"])
-                    continue
-
-                # -------- سایر دستورات --------
-                if txt.startswith("/start"):
-                    licensed = is_license_active(cid)
-                    if licensed:
-                        lic = get_user_license(cid)
-                        lic_msg = f"✅ اشتراک فعال تا {lic[1][:10]}"
-                    else:
-                        remaining = get_free_remaining(cid)
-                        lic_msg = f"🆓 رایگان - سهمیه باقی‌مانده: {remaining} از {FREE_LIMIT}"
-                    send(cid,
-                         f"سلام! 👋\nوضعیت اشتراک: {lic_msg}\n\n"
-                         "• متن انگلیسی بفرست تا ترجمه کنم\n"
-                         "• بنویس «قیمت» تا قیمت‌های لحظه‌ای را بفرستم\n"
-                         "• لینک ریلز اینستاگرام بفرست تا دانلود و ارسال کنم",
-                         m["message_id"])
-                elif "قیمت" in txt:
-                    send(cid, get_prices(), m["message_id"])
-                else:
-                    # ثبت پیام انگلیسی قبل از ترجمه
-                    log_message(cid, txt)
-                    send(cid, translate(txt), m["message_id"])
+                print(f"[CHAT ID] {cid} | Name: {m['chat'].get('first_name','')} | Text: {txt}", flush=True)
+                try:
+                    handle_message(cid, txt, m["message_id"], m.get("chat", {}))
+                except Exception as e:
+                    print(f"[HANDLE ERROR] {e}", flush=True)
+                    try:
+                        send(cid, f"⚠️ خطای داخلی: {str(e)[:80]}", m["message_id"], MAIN_MENU)
+                    except Exception:
+                        pass
 
         except Exception as e:
             print(f"[LOOP ERROR] {e}", flush=True)
             time.sleep(3)
 
-# ================== اجرای برنامه ==================
+# ================== اجرا ==================
 if __name__ == "__main__":
     init_db()
     threading.Thread(target=bot_loop, daemon=True).start()
