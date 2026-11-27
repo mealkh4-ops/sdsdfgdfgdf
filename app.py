@@ -12,7 +12,7 @@ from psycopg2.extras import RealDictCursor
 from persian_text_guard import ProfanityFilter, WordList
 import translators as ts
 
-# =================== تنظیمات ==================
+# ================== تنظیمات ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "70956629:jvLERRmmQGU4FxpB4G3pl12fPynPElOSpaE")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "18351322"))
 API_BASE = f"https://api.splus.ir/bot{BOT_TOKEN}"
@@ -30,7 +30,7 @@ profanity_filter = ProfanityFilter(WordList.persian_default())
 USER_STATE = {}
 
 STATE_MAIN = "main"
-STATE_REELS = "reels_wait"
+STATE_INSTA = "insta_wait"          # حالت واحد برای ریلز/استوری/پست
 STATE_TRANSLATE_MENU = "translate_menu"
 STATE_TRANSLATE_FA2EN = "translate_fa2en_wait"
 STATE_TRANSLATE_EN2FA = "translate_en2fa_wait"
@@ -39,7 +39,7 @@ STATE_SUBSCRIBE = "subscribe"
 # ================== کیبوردها ==================
 MAIN_MENU = {
     "keyboard": [
-        [{"text": "📥 دانلود ریلز اینستاگرام"}],
+        [{"text": "📥 دانلود از اینستاگرام"}],
         [{"text": "💰 نرخ دلار و طلا"}],
         [{"text": "🌐 ترجمه"}],
         [{"text": "🛒 خرید اشتراک"}]
@@ -71,7 +71,7 @@ SUBSCRIBE_MENU = {
 }
 
 # ================== دکمه‌ها ==================
-BTN_REELS = "📥 دانلود ریلز اینستاگرام"
+BTN_INSTA = "📥 دانلود از اینستاگرام"
 BTN_PRICES = "💰 نرخ دلار و طلا"
 BTN_TRANSLATE = "🌐 ترجمه"
 BTN_SUBSCRIBE = "🛒 خرید اشتراک"
@@ -381,6 +381,20 @@ def send_video(chat_id, video_path, caption=None, reply_to=None):
         print(f"[SEND VIDEO ERROR] {e}", flush=True)
         return {"ok": False}
 
+def send_photo(chat_id, photo_path, caption=None, reply_to=None):
+    url = f"{API_BASE}/sendPhoto"
+    try:
+        with open(photo_path, 'rb') as f:
+            files = {'photo': f}
+            data = {'chat_id': chat_id}
+            if caption: data['caption'] = caption
+            if reply_to: data['reply_to_message_id'] = reply_to
+            r = requests.post(url, data=data, files=files, timeout=120)
+            return r.json()
+    except Exception as e:
+        print(f"[SEND PHOTO ERROR] {e}", flush=True)
+        return {"ok": False}
+
 # ================== ترجمه ==================
 def translate(text, from_lang="en", to_lang="fa"):
     services = ["google", "bing", "alibaba", "baidu", "youdao"]
@@ -438,11 +452,16 @@ def get_prices():
     except Exception as e:
         return f"⚠️ خطا: {e}"
 
-# ================== ریلز ==================
-def is_instagram_reel(text):
-    return bool(re.search(r"instagram\.com/(reel|p)/", text))
+# ================== اینستاگرام (ریلز / استوری / پست) ==================
+def is_instagram_url(text):
+    return bool(re.search(r"instagram\.com/(reel|reels|p|tv|stories)/", text))
 
-def download_and_send_reel(chat_id, url, reply_to=None):
+def is_instagram_story(text):
+    return bool(re.search(r"instagram\.com/stories/", text))
+
+def download_and_send_instagram(chat_id, url, reply_to=None):
+    """دانلود ریلز/پست/استوری. در صورت خطا None برمی‌گرداند (یعنی خطا در دانلود)."""
+    tmp_files = []
     try:
         resp = requests.get(
             FASTSAVER_ENDPOINT,
@@ -454,49 +473,72 @@ def download_and_send_reel(chat_id, url, reply_to=None):
 
         if not data.get("ok"):
             error = data.get("detail", data.get("error", "خطای ناشناخته"))
-            send(chat_id, f"⚠️ {error}", reply_to, MAIN_MENU)
-            return False
+            send(chat_id, f"⚠️ {error}", reply_to)
+            return None
 
         media_type = data.get("type", "")
+
+        # ساخت لیست آیتم‌های قابل دانلود
+        items = []
         if media_type == "album":
-            items = data.get("items", [])
-            if not items:
-                send(chat_id, "⚠️ محتوایی پیدا نشد.", reply_to, MAIN_MENU)
-                return False
-            download_url = items[0].get("download_url")
+            for it in data.get("items", []):
+                durl = it.get("download_url")
+                if durl:
+                    items.append((durl, it.get("type", "video")))
         elif media_type in ("video", "image"):
-            download_url = data.get("download_url")
-        else:
-            send(chat_id, "⚠️ نوع محتوا پشتیبانی نمی‌شود.", reply_to, MAIN_MENU)
-            return False
+            durl = data.get("download_url")
+            if durl:
+                items.append((durl, media_type))
 
-        if not download_url:
-            send(chat_id, "⚠️ لینک دانلود دریافت نشد.", reply_to, MAIN_MENU)
-            return False
+        if not items:
+            send(chat_id, "⚠️ محتوایی پیدا نشد.", reply_to)
+            return None
 
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-            video_resp = requests.get(download_url, stream=True, timeout=(10, 60))
-            video_resp.raise_for_status()
-            for chunk in video_resp.iter_content(chunk_size=65536):
-                f.write(chunk)
-            video_path = f.name
+        send(chat_id, "📥 در حال دریافت و ارسال محتوا...", reply_to)
 
-        send(chat_id, "📥 در حال ارسال ویدیو...", reply_to)
-        result = send_video(chat_id, video_path, reply_to=reply_to)
-        os.unlink(video_path)
-        return result.get("ok", False)
+        sent_any = False
+        for durl, itype in items:
+            is_video = (itype == "video")
+            suffix = ".mp4" if is_video else ".jpg"
+
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                media_resp = requests.get(durl, stream=True, timeout=(10, 120))
+                media_resp.raise_for_status()
+                for chunk in media_resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+                fpath = f.name
+            tmp_files.append(fpath)
+
+            if is_video:
+                result = send_video(chat_id, fpath, reply_to=reply_to)
+            else:
+                result = send_photo(chat_id, fpath, reply_to=reply_to)
+
+            if result.get("ok"):
+                sent_any = True
+            else:
+                print(f"[SEND MEDIA FAILED] {result}", flush=True)
+
+        return True if sent_any else None
 
     except requests.exceptions.Timeout:
-        send(chat_id, "⚠️ زمان درخواست به پایان رسید.", reply_to, MAIN_MENU)
-        return False
+        send(chat_id, "⚠️ زمان درخواست به پایان رسید.", reply_to)
+        return None
     except requests.exceptions.RequestException as e:
         print(f"[FASTSAVER NETWORK ERROR] {e}", flush=True)
-        send(chat_id, "⚠️ خطا در ارتباط با سرویس دانلود.", reply_to, MAIN_MENU)
-        return False
+        send(chat_id, "⚠️ خطا در ارتباط با سرویس دانلود.", reply_to)
+        return None
     except Exception as e:
-        print(f"[REEL ERROR] {e}", flush=True)
-        send(chat_id, f"⚠️ خطا: {str(e)[:100]}", reply_to, MAIN_MENU)
-        return False
+        print(f"[INSTA ERROR] {e}", flush=True)
+        send(chat_id, f"⚠️ خطا: {str(e)[:100]}", reply_to)
+        return None
+    finally:
+        for fp in tmp_files:
+            try:
+                os.unlink(fp)
+            except Exception:
+                pass
 
 # ================== هندلر اصلی ==================
 def handle_message(cid, txt, msg_id, chat_meta):
@@ -537,7 +579,6 @@ def handle_message(cid, txt, msg_id, chat_meta):
                 send(cid, "فرمت: /block 123456789", msg_id)
             return
 
-        # /all + متن
         if txt.startswith("/all"):
             body = txt[len("/all"):].strip()
             if not body:
@@ -546,7 +587,6 @@ def handle_message(cid, txt, msg_id, chat_meta):
             send(cid, f"📤 ارسال شد به {s} کاربر. ناموفق: {f}", msg_id)
             return
 
-        # /send + chatid + متن
         if txt.startswith("/send"):
             parts = txt.split(maxsplit=2)
             if len(parts) < 3:
@@ -559,13 +599,11 @@ def handle_message(cid, txt, msg_id, chat_meta):
             send(cid, "✅ ارسال شد." if ok else "⚠️ ارسال ناموفق.", msg_id)
             return
 
-        # /delete all
         if txt.strip() == "/delete all":
             d, f = delete_admin_broadcasts(kind="all")
             send(cid, f"🗑 حذف‌شده: {d} | ناموفق: {f}", msg_id)
             return
 
-        # /delete + chatid
         if txt.startswith("/delete"):
             parts = txt.split()
             if len(parts) < 2:
@@ -582,7 +620,6 @@ def handle_message(cid, txt, msg_id, chat_meta):
                 send(cid, f"🗑 حذف‌شده برای {target}: {d} | ناموفق: {f}", msg_id)
             return
 
-        # /factor + chatid
         if txt.startswith("/factor"):
             parts = txt.split()
             if len(parts) < 2:
@@ -637,11 +674,15 @@ def handle_message(cid, txt, msg_id, chat_meta):
         return
 
     # -------- منوی اصلی --------
-    if txt == BTN_REELS:
-        USER_STATE[cid] = STATE_REELS
+    if txt == BTN_INSTA:
+        USER_STATE[cid] = STATE_INSTA
         send(cid,
-             "📥 لطفاً لینک ریلز اینستاگرام را ارسال کنید.\n"
-             "⚠️ فقط لینک ریلز پذیرفته می‌شود.",
+             "📥 لطفاً لینک ریلز، پست یا استوری اینستاگرام را ارسال کنید.\n\n"
+             "✅ لینک‌های پشتیبانی‌شده:\n"
+             "• ریلز: instagram.com/reel/...\n"
+             "• پست: instagram.com/p/...\n"
+             "• استوری: instagram.com/stories/...\n\n"
+             "💡 می‌توانید چندین لینک را به صورت متوالی ارسال کنید.",
              msg_id, BACK_MENU)
         return
 
@@ -690,11 +731,12 @@ def handle_message(cid, txt, msg_id, chat_meta):
         send(cid, f"🌐 ترجمه:\n\n{result}", msg_id, TRANSLATE_MENU)
         return
 
-    # -------- دریافت لینک ریلز --------
-    if state == STATE_REELS:
-        if not is_instagram_reel(txt):
+    # -------- دریافت لینک اینستاگرام (ریلز/پست/استوری) --------
+    if state == STATE_INSTA:
+        if not is_instagram_url(txt):
             send(cid,
-                 "⚠️ خطا: فقط لینک ریلز اینستاگرام پذیرفته می‌شود.\n"
+                 "⚠️ خطا: لینک نامعتبر است.\n"
+                 "لطفاً لینک ریلز، پست یا استوری اینستاگرام ارسال کنید.\n"
                  "مثال: https://www.instagram.com/reel/XXXXX/",
                  msg_id, BACK_MENU)
             return
@@ -710,7 +752,12 @@ def handle_message(cid, txt, msg_id, chat_meta):
                 USER_STATE[cid] = STATE_MAIN
                 return
 
-        success = download_and_send_reel(cid, txt, msg_id)
+        success = download_and_send_instagram(cid, txt, msg_id)
+
+        # ⚠️ نکته مهم: حالت را روی STATE_INSTA نگه می‌داریم تا کاربر
+        # بتواند بدون بازگشت به منو، پشت سر هم لینک بفرستد.
+        USER_STATE[cid] = STATE_INSTA
+
         if success:
             log_download(cid, txt)
             if not licensed:
@@ -718,11 +765,18 @@ def handle_message(cid, txt, msg_id, chat_meta):
                 remaining = get_free_remaining(cid)
                 send(cid,
                      f"✅ ارسال موفق.\n"
-                     f"🔋 سهمیه رایگان باقی‌مانده: {remaining} از {FREE_LIMIT}",
-                     msg_id, MAIN_MENU)
+                     f"🔋 سهمیه رایگان باقی‌مانده: {remaining} از {FREE_LIMIT}\n\n"
+                     f"📎 می‌توانید لینک بعدی را ارسال کنید.",
+                     msg_id, BACK_MENU)
             else:
-                send(cid, "✅ ارسال موفق.", msg_id, MAIN_MENU)
-        USER_STATE[cid] = STATE_MAIN
+                send(cid,
+                     "✅ ارسال موفق.\n\n📎 می‌توانید لینک بعدی را ارسال کنید.",
+                     msg_id, BACK_MENU)
+        else:
+            # حتی در صورت خطا، حالت را در همان بخش نگه می‌داریم
+            send(cid,
+                 "🔁 می‌توانید دوباره تلاش کنید یا لینک دیگری ارسال کنید.",
+                 msg_id, BACK_MENU)
         return
 
     # -------- حالت خرید اشتراک --------
